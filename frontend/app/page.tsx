@@ -2,7 +2,41 @@
 
 import { useState, useRef, useEffect } from "react";
 import { sendChatQuery } from "@/lib/api/client";
-import type { ChatMessage } from "@/lib/api/types";
+import type { ChatMessage, Citation } from "@/lib/api/types";
+
+function CitationItem({ citation }: { citation: Citation }) {
+  const pagesText = citation.pages.length === 1 
+    ? `Page ${citation.pages[0]}` 
+    : `Pages ${citation.pages[0]}-${citation.pages[citation.pages.length - 1]}`;
+  
+  return (
+    <div className="rounded border border-zinc-300 bg-zinc-50 p-2 text-xs dark:border-zinc-700 dark:bg-zinc-900">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex-1">
+          <p className="font-medium text-zinc-900 dark:text-zinc-100">
+            {citation.document}
+          </p>
+          {citation.section && (
+            <p className="text-zinc-600 dark:text-zinc-400">
+              Section {citation.section}
+            </p>
+          )}
+          <p className="text-zinc-500 dark:text-zinc-500">{pagesText}</p>
+          {citation.statute_codes.length > 0 && (
+            <p className="mt-1 text-zinc-500 dark:text-zinc-500">
+              Statutes: {citation.statute_codes.join(", ")}
+            </p>
+          )}
+        </div>
+        <div className="text-right">
+          <span className="inline-block rounded bg-blue-100 px-2 py-0.5 text-xs font-medium text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+            {(citation.relevance * 100).toFixed(0)}%
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -33,47 +67,20 @@ export default function Home() {
     setIsLoading(true);
     setError(null);
 
-    // Initialize assistant message for streaming
-    const assistantMessage: ChatMessage = {
-      role: "assistant",
-      content: "",
-    };
-    setMessages((prev) => [...prev, assistantMessage]);
-
     try {
-      await sendChatQuery(
-        { query: userMessage.content },
-        (chunk) => {
-          if (chunk.error) {
-            setError(chunk.error);
-            setIsLoading(false);
-            return;
-          }
-
-          setMessages((prev) => {
-            const newMessages = [...prev];
-            const lastMessage = newMessages[newMessages.length - 1];
-            if (lastMessage.role === "assistant") {
-              lastMessage.content += chunk.content;
-            }
-            return newMessages;
-          });
-
-          if (chunk.done) {
-            setIsLoading(false);
-          }
-        },
-        (err) => {
-          setError(err.message);
-          setIsLoading(false);
-          // Remove the empty assistant message on error
-          setMessages((prev) => prev.slice(0, -1));
-        }
-      );
+      const response = await sendChatQuery({ query: userMessage.content });
+      
+      const assistantMessage: ChatMessage = {
+        role: "assistant",
+        content: response.answer,
+        citations: response.citations,
+      };
+      
+      setMessages((prev) => [...prev, assistantMessage]);
+      setIsLoading(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred");
       setIsLoading(false);
-      setMessages((prev) => prev.slice(0, -1));
     }
   };
 
@@ -107,8 +114,20 @@ export default function Home() {
                       }`}
                     >
                       <p className="whitespace-pre-wrap break-words">
-                        {message.content || (isLoading && index === messages.length - 1 ? "..." : "")}
+                        {message.content}
                       </p>
+                      {message.role === "assistant" && message.citations && message.citations.length > 0 && (
+                        <div className="mt-3 border-t border-zinc-300 pt-3 dark:border-zinc-700">
+                          <p className="mb-2 text-xs font-semibold uppercase text-zinc-600 dark:text-zinc-400">
+                            Citations
+                          </p>
+                          <div className="space-y-2">
+                            {message.citations.map((citation, citIndex) => (
+                              <CitationItem key={citIndex} citation={citation} />
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
