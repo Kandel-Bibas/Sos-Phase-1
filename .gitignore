@@ -1,0 +1,18 @@
+
+# SAM build artifacts
+.aws-sam/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+opensearch-dependencies/
+
+.env
