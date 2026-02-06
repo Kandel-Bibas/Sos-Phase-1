@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import axios from 'axios';
+import { Document, Page, pdfjs } from 'react-pdf';
 import {
   ArrowUp,
   Plus,
@@ -19,6 +20,13 @@ import {
 
 // --- Configuration ---
 const API_ENDPOINT_CONFIG = import.meta.env.VITE_API_ENDPOINT || 'http://localhost:8000/api/chat';
+const DOCS_ENDPOINT_CONFIG = import.meta.env.VITE_DOCS_ENDPOINT || '';
+const DOCS_API_KEY = import.meta.env.VITE_DOCS_API_KEY || '';
+
+pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url
+).toString();
 
 // --- Types ---
 interface Citation {
@@ -109,8 +117,14 @@ const GridBackground = () => (
 );
 
 // 2. Modern Citation Card
-const CitationCard = ({ citation }: { citation: Citation }) => (
-  <div className="group flex items-center justify-between p-3 bg-zinc-900/50 border border-zinc-800/50 hover:border-zinc-700 transition-all duration-300 rounded-lg cursor-pointer">
+const CitationCard = ({
+  citation,
+  onOpenPage
+}: {
+  citation: Citation;
+  onOpenPage?: (document: string, page: number) => void;
+}) => (
+  <div className="group flex items-center justify-between p-3 bg-zinc-900/50 border border-zinc-800/50 hover:border-zinc-700 transition-all duration-300 rounded-lg">
     <div className="flex items-center gap-3 min-w-0">
       <div className="flex items-center justify-center w-8 h-8 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-400 group-hover:text-white transition-colors">
         <Scale size={14} />
@@ -120,7 +134,7 @@ const CitationCard = ({ citation }: { citation: Citation }) => (
           {citation.document}
         </span>
         <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">
+          <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">
             Relevance {Math.round(citation.relevance * 100)}%
           </span>
         </div>
@@ -128,16 +142,27 @@ const CitationCard = ({ citation }: { citation: Citation }) => (
     </div>
     <div className="flex gap-1 pl-2">
       {citation.pages.slice(0, 2).map((page, i) => (
-        <span key={i} className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-zinc-800 bg-black text-zinc-500">
+        <button
+          key={i}
+          type="button"
+          onClick={() => onOpenPage?.(citation.document, page)}
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-zinc-700 bg-black text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer pointer-events-auto"
+        >
           p.{page}
-        </span>
+        </button>
       ))}
     </div>
   </div>
 );
 
 // 3. Brutalist Message Block
-const MessageBlock = ({ message }: { message: Message }) => {
+const MessageBlock = ({
+  message,
+  onOpenCitationPage
+}: {
+  message: Message;
+  onOpenCitationPage?: (document: string, page: number) => void;
+}) => {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
 
@@ -152,12 +177,12 @@ const MessageBlock = ({ message }: { message: Message }) => {
       <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
 
         {/* Header / Meta */}
-        <div className="flex items-center gap-3 mb-3 opacity-60">
-          <span className="text-xs font-mono uppercase tracking-widest text-zinc-500">
-            {isUser ? 'Officer Query' : 'System Verification'}
+        <div className="flex items-center gap-3 mb-3">
+          <span className="text-xs font-mono uppercase tracking-widest text-zinc-400">
+            {isUser ? 'Query' : 'Response'}
           </span>
-          <span className="w-px h-3 bg-zinc-800"></span>
-          <span className="text-[10px] font-mono text-zinc-600">
+          <span className="w-px h-3 bg-zinc-700"></span>
+          <span className="text-[10px] font-mono text-zinc-500">
             {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
           </span>
         </div>
@@ -189,7 +214,7 @@ const MessageBlock = ({ message }: { message: Message }) => {
               <div className="flex items-center gap-4 mt-6 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                 <button
                   onClick={handleCopy}
-                  className="flex items-center gap-2 text-xs font-mono text-zinc-500 hover:text-white transition-colors"
+                  className="flex items-center gap-2 text-xs font-mono text-zinc-400 hover:text-white transition-colors"
                 >
                   {copied ? <Check size={12} /> : <Copy size={12} />}
                   {copied ? 'COPIED' : 'COPY REPORT'}
@@ -199,12 +224,12 @@ const MessageBlock = ({ message }: { message: Message }) => {
               {/* Citations Grid */}
               {message.citations && message.citations.length > 0 && (
                 <div className="mt-8 pt-6 border-t border-zinc-900">
-                  <span className="block text-[10px] font-mono uppercase tracking-widest text-zinc-600 mb-4">
+                  <span className="block text-[10px] font-mono uppercase tracking-widest text-zinc-500 mb-4">
                     Legal Statutes & References
                   </span>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                     {message.citations.map((cit, idx) => (
-                      <CitationCard key={idx} citation={cit} />
+                      <CitationCard key={idx} citation={cit} onOpenPage={onOpenCitationPage} />
                     ))}
                   </div>
                 </div>
@@ -225,8 +250,8 @@ const ProcessingState = () => (
         <div className="absolute left-[-1px] top-0 h-full w-px bg-gradient-to-b from-zinc-600 to-transparent animate-pulse"></div>
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-3">
-             <Cpu size={14} className="text-zinc-500 animate-spin-slow" />
-             <span className="text-xs font-mono text-zinc-400">VERIFYING_REGULATIONS...</span>
+             <Cpu size={14} className="text-zinc-400 animate-spin-slow" />
+             <span className="text-xs font-mono text-zinc-300">Analyzing documents...</span>
           </div>
           <div className="h-4 w-32 bg-zinc-900 rounded animate-pulse"></div>
           <div className="h-4 w-48 bg-zinc-900 rounded animate-pulse delay-75"></div>
@@ -242,6 +267,12 @@ function App() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfPage, setPdfPage] = useState<number>(1);
+  const [pdfDocName, setPdfDocName] = useState<string>('');
+  const [isPdfLoading, setIsPdfLoading] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const [pdfWidth, setPdfWidth] = useState<number>(900);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -320,6 +351,45 @@ function App() {
     }
   };
 
+  const handleOpenCitationPage = async (document: string, page: number) => {
+    setIsPdfLoading(true);
+    setPdfError(null);
+    setPdfUrl(null);
+    setPdfDocName(document);
+    setPdfPage(page);
+
+    if (!DOCS_ENDPOINT_CONFIG) {
+      setPdfError('Docs endpoint not configured.');
+      setIsPdfLoading(false);
+      return;
+    }
+
+    try {
+      const response = await axios.post(
+        DOCS_ENDPOINT_CONFIG,
+        { filename: document },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            ...(DOCS_API_KEY ? { 'x-api-key': DOCS_API_KEY } : {})
+          },
+          timeout: 30000
+        }
+      );
+
+      const data = response.data;
+      const url = typeof data?.body === 'string'
+        ? JSON.parse(data.body).url
+        : data?.url;
+      if (!url) throw new Error('No URL returned from docs API');
+      setPdfUrl(url);
+    } catch (err) {
+      setPdfError(err instanceof Error ? err.message : 'Failed to fetch PDF');
+    } finally {
+      setIsPdfLoading(false);
+    }
+  };
+
   return (
     <div className="relative w-full h-screen bg-[#050505] text-zinc-100 font-sans overflow-hidden selection:bg-white selection:text-black">
       <GridBackground />
@@ -328,16 +398,15 @@ function App() {
       <nav className="fixed top-0 left-0 right-0 z-50 h-14 border-b border-zinc-900 bg-[#050505]/80 backdrop-blur-md flex items-center justify-between px-6">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 bg-white rounded-full"></div>
-          <span className="font-mono text-sm tracking-tight text-zinc-400">MS SOS <span className="text-zinc-600">/ REG-CHECK AI</span></span>
         </div>
         <div className="flex items-center gap-4">
           <button
             onClick={clearChat}
-            className="text-xs font-mono text-zinc-500 hover:text-white transition-colors tracking-wider"
+            className="text-xs font-mono text-zinc-400 hover:text-white transition-colors tracking-wider"
           >
             RESET_CONTEXT
           </button>
-          <a href="#" className="p-2 text-zinc-500 hover:text-white transition-colors">
+          <a href="#" className="p-2 text-zinc-400 hover:text-white transition-colors">
             <Disc size={18} className={isLoading ? "animate-spin" : ""} />
           </a>
         </div>
@@ -352,32 +421,21 @@ function App() {
             {messages.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-1000">
                 <div className="text-center space-y-8 max-w-2xl">
-                   <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-zinc-800 bg-zinc-900/50 mb-4">
-                      <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>
-                      <span className="text-[10px] font-mono text-zinc-400 uppercase tracking-wider">MS SECRETARY OF STATE SECURE SYSTEM</span>
-                   </div>
                    <h1 className="text-5xl md:text-7xl font-light tracking-tighter text-white">
-                    Regulation Verification <br/>
-                    <span className="text-zinc-500">System Ready.</span>
+                    SOS AI Innovation Hub <br/>
+                    <span className="text-zinc-500">Project Phase 1</span>
                    </h1>
-
-                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-12 w-full">
-                     {['Verify compliance: Title 25', 'Check conflict: House Bill 453', 'Analyze format: Section 4', 'Draft summary of non-compliance'].map((suggestion, i) => (
-                       <button
-                         key={i}
-                         onClick={() => setInput(suggestion)}
-                         className="group flex items-center justify-between p-4 bg-zinc-900/30 border border-zinc-800/50 hover:bg-zinc-900 hover:border-zinc-700 transition-all text-left"
-                       >
-                         <span className="text-sm font-mono text-zinc-400 group-hover:text-white transition-colors">{suggestion}</span>
-                         <ArrowRight size={14} className="text-zinc-600 group-hover:text-white -translate-x-2 opacity-0 group-hover:translate-x-0 group-hover:opacity-100 transition-all" />
-                       </button>
-                     ))}
-                   </div>
                 </div>
               </div>
             ) : (
               <>
-                {messages.map(msg => <MessageBlock key={msg.id} message={msg} />)}
+                {messages.map(msg => (
+                  <MessageBlock
+                    key={msg.id}
+                    message={msg}
+                    onOpenCitationPage={handleOpenCitationPage}
+                  />
+                ))}
                 {isLoading && <ProcessingState />}
                 <div ref={messagesEndRef} />
               </>
@@ -402,7 +460,7 @@ function App() {
                 onFocus={() => setIsFocused(true)}
                 onBlur={() => setIsFocused(false)}
                 placeholder="Enter regulation ID or paste text for verification..."
-                className="flex-1 max-h-[200px] py-3 bg-transparent border-none focus:ring-0 text-base font-light text-white placeholder-zinc-600 resize-none scrollbar-hide leading-relaxed"
+                className="flex-1 max-h-[200px] py-3 bg-transparent border-none focus:ring-0 focus:outline-none text-base font-light text-white placeholder-zinc-500 resize-none scrollbar-hide leading-relaxed"
                 rows={1}
                 disabled={isLoading}
               />
@@ -420,18 +478,75 @@ function App() {
 
             <div className="flex justify-between items-center mt-3 px-2">
                <div className="flex gap-4">
-                 <span className="text-[10px] font-mono text-zinc-600 flex items-center gap-1.5">
+                 <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1.5">
                    <Command size={10} /> RETURN to send
                  </span>
-                 <span className="text-[10px] font-mono text-zinc-600 flex items-center gap-1.5">
+                 <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1.5">
                    <Maximize2 size={10} /> SHIFT + RETURN for new line
                  </span>
                </div>
-               <span className="text-[10px] font-mono text-zinc-700">MODEL: MS-LEGAL-BERT V2</span>
             </div>
           </div>
         </div>
       </main>
+
+      {/* PDF Viewer Overlay */}
+      {pdfDocName && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => {
+            setPdfDocName('');
+            setPdfUrl(null);
+            setPdfError(null);
+          }}
+        >
+          <div
+            className="w-full max-w-5xl max-h-[90vh] bg-[#0a0a0a] border border-zinc-800 rounded-lg shadow-2xl overflow-hidden flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+              <div className="flex items-center gap-3 min-w-0">
+                <span className="text-xs font-mono text-zinc-400">PDF</span>
+                <span className="text-sm font-mono text-zinc-200 truncate">{pdfDocName}</span>
+                <span className="text-xs font-mono text-zinc-500">p.{pdfPage}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setPdfDocName('');
+                  setPdfUrl(null);
+                  setPdfError(null);
+                }}
+                className="text-xs font-mono text-zinc-400 hover:text-white transition-colors"
+              >
+                CLOSE
+              </button>
+            </div>
+
+            <div
+              className="flex-1 overflow-auto flex items-center justify-center bg-black"
+              ref={(node) => {
+                if (node) {
+                  const nextWidth = Math.min(node.clientWidth - 32, 1100);
+                  if (nextWidth > 0 && nextWidth !== pdfWidth) setPdfWidth(nextWidth);
+                }
+              }}
+            >
+              {isPdfLoading && (
+                <span className="text-xs font-mono text-zinc-500">Loading PDF...</span>
+              )}
+              {pdfError && (
+                <span className="text-xs font-mono text-red-400">{pdfError}</span>
+              )}
+              {pdfUrl && !pdfError && (
+                <Document file={pdfUrl} loading="">
+                  <Page pageNumber={pdfPage} width={pdfWidth} />
+                </Document>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Utilities */}
       <style>{`
