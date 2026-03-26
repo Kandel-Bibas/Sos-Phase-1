@@ -1,12 +1,12 @@
 import axios, { AxiosError } from 'axios';
-import type { Citation } from '../types';
+import type { Citation, ResearchFilters, ResponseMetadata, ApiResponse, VerificationResult } from '../types';
 
-interface ApiResponse {
-  answer?: string;
-  response?: string;
-  message?: string;
+export interface ChatResponse {
+  answer: string;
   citations?: Citation[];
-  error?: string;
+  intent?: string;
+  metadata?: ResponseMetadata;
+  verification?: VerificationResult;
 }
 
 export class ChatService {
@@ -16,34 +16,47 @@ export class ChatService {
     this.apiEndpoint = apiEndpoint;
   }
 
-  async sendMessage(message: string): Promise<{ answer: string; citations?: Citation[] }> {
+  async sendMessage(
+    message: string,
+    options?: {
+      filters?: ResearchFilters;
+      history?: { role: string; content: string }[];
+      mode?: 'research' | 'compare' | 'count';
+    }
+  ): Promise<ChatResponse> {
     try {
-      // Input sanitization
       const sanitizedMessage = message.trim();
-      
+
       if (!sanitizedMessage) {
         throw new Error('Message cannot be empty');
       }
 
-      console.log('📤 Sending request to:', this.apiEndpoint);
-      console.log('📤 Request body:', { query: sanitizedMessage });
+      const requestBody: Record<string, unknown> = {
+        query: sanitizedMessage,
+      };
+
+      // Phase 2: add filters, history, mode if provided
+      if (options?.filters) {
+        requestBody.filters = options.filters;
+      }
+      if (options?.history) {
+        requestBody.history = options.history;
+      }
+      if (options?.mode) {
+        requestBody.mode = options.mode;
+      }
 
       const response = await axios.post<ApiResponse>(
         this.apiEndpoint,
-        {
-          query: sanitizedMessage,
-        },
+        requestBody,
         {
           headers: {
             'Content-Type': 'application/json',
           },
-          timeout: 120000, // 2 minutes timeout
+          timeout: 120000,
         }
       );
 
-      console.log('📥 Response received:', response.data);
-
-      // Handle different response formats
       const data = response.data;
       const answerText = data.answer || data.response || data.message;
 
@@ -54,32 +67,28 @@ export class ChatService {
       return {
         answer: answerText,
         citations: data.citations || [],
+        intent: data.intent,
+        metadata: data.metadata,
+        verification: data.verification,
       };
     } catch (error) {
-      console.error('❌ Error occurred:', error);
-      
       if (axios.isAxiosError(error)) {
         const axiosError = error as AxiosError<ApiResponse>;
-        
+
         if (axiosError.response) {
-          // Server responded with error
-          console.error('❌ Server response error:', axiosError.response.status, axiosError.response.data);
-          const errorMessage = axiosError.response.data?.error || 
+          const errorMessage = axiosError.response.data?.error ||
                               axiosError.response.data?.message ||
                               `Server error: ${axiosError.response.status}`;
           throw new Error(errorMessage);
         } else if (axiosError.request) {
-          // Request made but no response
-          console.error('❌ No response received. This might be a CORS or network issue.');
-          console.error('❌ Check: 1) Is the endpoint correct? 2) Is CORS enabled on AWS API Gateway?');
           throw new Error('No response from server. Check console for details.');
         }
       }
-      
+
       if (error instanceof Error) {
         throw error;
       }
-      
+
       throw new Error('An unexpected error occurred');
     }
   }

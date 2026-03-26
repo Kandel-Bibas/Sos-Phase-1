@@ -79,7 +79,7 @@ class AWSConfig(BaseModel):
     opensearch_endpoint: str = Field(default="", description="OpenSearch endpoint URL")
     opensearch_index: str = Field(default="ms-legal-abstracts", description="OpenSearch index name")
     s3_bucket: str = Field(default="", description="S3 bucket for document storage")
-    
+
     # Bedrock models
     bedrock_llm_model: str = Field(
         default="mistral.mistral-large-3-675b-instruct",
@@ -87,13 +87,23 @@ class AWSConfig(BaseModel):
     )
     bedrock_embedding_model: str = Field(
         default="amazon.titan-embed-text-v2:0",
-        description="Bedrock embedding model ID (Cohere Embed v4)"
+        description="Bedrock embedding model ID (Titan Embed v2)"
     )
-    
+
     # Lambda settings (for deployment)
     lambda_function_name: str = Field(
         default="ms-sos-clara-chat-query",
         description="Lambda function name"
+    )
+
+    # Phase 2: Multi-state crawler config
+    crawler_dest_root: str = Field(
+        default="./crawled_documents",
+        description="Local destination root for crawled documents"
+    )
+    crawler_s3_prefix: str = Field(
+        default="crawled-documents",
+        description="S3 prefix for crawled documents"
     )
 
 

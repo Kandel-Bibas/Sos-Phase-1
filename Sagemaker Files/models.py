@@ -1,9 +1,12 @@
 """
 Data models for the CLaRa Legal Analysis System.
 Defines structures for documents, abstracts, and retrieval results.
+
+Phase 2 adds CompressedAbstractV2 with multi-state metadata for
+cross-jurisdiction comparison, fee analysis, and reciprocity tracking.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from pydantic import BaseModel, Field
 
@@ -19,6 +22,9 @@ class DocumentChunk(BaseModel):
     chunk_index: int = Field(description="Index of this chunk in the document")
     total_chunks: int = Field(description="Total chunks in the document")
     created_at: datetime = Field(default_factory=datetime.now)
+    # Phase 2: multi-state provenance
+    state: str = Field(default="MS", description="State code (MS, AL, TN, etc.)")
+    agency_type: str = Field(default="", description="Agency type: medical, real_estate, dental")
 
 
 class CompressedAbstract(BaseModel):
@@ -78,6 +84,60 @@ class CompressedAbstract(BaseModel):
         return f"{self.source_document}{section} (pp. {pages})"
 
 
+# ── Phase 2: Multi-State Models ────────────────────────────────────────
+
+
+class FeeRecord(BaseModel):
+    """Extracted fee or fine from regulatory text."""
+    amount: float = Field(description="Dollar amount of the fee/fine")
+    fee_type: str = Field(description="Type: 'renewal', 'application', 'fine', 'penalty', 'examination', 'late'")
+    description: str = Field(description="Description of what the fee is for")
+    statutory_cap: float | None = Field(default=None, description="Statutory maximum if specified")
+
+
+class CompressedAbstractV2(CompressedAbstract):
+    """
+    Extended compressed abstract with multi-state metadata for Phase 2.
+
+    Adds: state/agency tracking, fee extraction, dates, license categories,
+    testing requirements, statutory authority references, and reciprocity info.
+    """
+    # Multi-state identification
+    state: str = Field(default="MS", description="State code: MS, AL, TN, LA, AR, GA, TX")
+    agency_type: str = Field(default="", description="Agency type: medical, real_estate, dental")
+    agency_name: str = Field(default="", description="Full agency name")
+
+    # Fee and penalty extraction
+    fee_amounts: list[FeeRecord] = Field(
+        default_factory=list,
+        description="Extracted fees, fines, and penalties"
+    )
+
+    # Temporal metadata
+    effective_date: date | None = Field(default=None, description="Regulation adoption/effective date")
+    amendment_date: date | None = Field(default=None, description="Last amendment date")
+
+    # Licensing metadata
+    license_categories: list[str] = Field(
+        default_factory=list,
+        description="License categories: 'temporary', 'permanent', 'reciprocity', 'provisional', etc."
+    )
+    testing_requirements: str | None = Field(
+        default=None,
+        description="Examination/testing requirements for licensure"
+    )
+
+    # Authority and reciprocity
+    statutory_authority_references: list[str] = Field(
+        default_factory=list,
+        description="Statutory authority citations granting rulemaking power"
+    )
+    reciprocity_provisions: str | None = Field(
+        default=None,
+        description="Out-of-state licensure reciprocity provisions"
+    )
+
+
 class RetrievalResult(BaseModel):
     """Result from vector store retrieval."""
     abstract: CompressedAbstract = Field(description="Retrieved compressed abstract")
@@ -110,6 +170,12 @@ class ChatResponse(BaseModel):
     confidence_note: str | None = Field(
         default=None,
         description="Any caveats about the response"
+    )
+    # Phase 2: enhanced response metadata
+    intent: str = Field(default="general_research", description="Detected query intent")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Structured metadata: comparison tables, frequency data, fee analysis, etc."
     )
 
 

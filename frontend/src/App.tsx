@@ -1,22 +1,27 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
-import axios from 'axios';
 import { Document, Page, pdfjs } from 'react-pdf';
 import {
   ArrowUp,
-  Plus,
   Terminal,
   Command,
-  ArrowRight,
   Maximize2,
   Copy,
   Check,
   Disc,
-  Link,
+  Scale,
   Cpu,
-  Scale
+  Filter,
 } from 'lucide-react';
-
+import type { Citation, Message, ResearchFilters, ResponseMetadata } from './types';
+import { useChat } from './hooks/useChat';
+import { useFilters } from './hooks/useFilters';
+import { usePDF } from './hooks/usePDF';
+import { FilterPanel } from './components/FilterPanel';
+import { ComparisonTable } from './components/research/ComparisonTable';
+import { FeeTable } from './components/research/FeeTable';
+import { TermFrequencyChart } from './components/research/TermFrequencyChart';
+import { AuthorityChain } from './components/research/AuthorityChain';
 
 // --- Configuration ---
 const API_ENDPOINT_CONFIG = import.meta.env.VITE_API_ENDPOINT || 'http://localhost:8000/api/chat';
@@ -28,95 +33,34 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).toString();
 
-// --- Types ---
-interface Citation {
-  document: string;
-  pages: number[];
-  relevance: number;
-}
-
-interface Message {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: Date;
-  isError?: boolean;
-  citations?: Citation[];
-}
-
-interface ApiResponse {
-  answer?: string;
-  response?: string;
-  message?: string;
-  citations?: Citation[];
-  error?: string;
-}
-
-// --- API Service ---
-class ChatService {
-  private apiEndpoint: string;
-
-  constructor(apiEndpoint: string) {
-    this.apiEndpoint = apiEndpoint;
-  }
-
-  async sendMessage(message: string): Promise<{ answer: string; citations?: Citation[] }> {
-    const sanitizedMessage = message.trim();
-    if (!sanitizedMessage) throw new Error('Message cannot be empty');
-
-    try {
-      if (!this.apiEndpoint) {
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        return {
-          answer: "## Regulation Analysis Complete\n\nI have cross-referenced the submitted regulation against **Mississippi State Statute 25-43**. \n\n### Findings:\n- **Section 4.2** appears to conflict with the definition of 'agency' in the 2024 Amendment.\n- **Formatting** adheres to the Administrative Procedures Act requirements.\n\nTo connect to the live legal database:\n1. Open `App.tsx`\n2. Configure `API_ENDPOINT_CONFIG` with your backend URL.",
-          citations: [
-            { document: "MS_Code_Title_25.pdf", pages: [42, 43], relevance: 0.99 },
-            { document: "Proposed_Reg_Draft_v4.docx", pages: [12], relevance: 0.95 }
-          ]
-        };
-      }
-
-      const response = await axios.post<ApiResponse>(
-        this.apiEndpoint,
-        { query: sanitizedMessage },
-        {
-          headers: { 'Content-Type': 'application/json' },
-          timeout: 120000
-        }
-      );
-
-      const data = response.data;
-      const answerText = data.answer || data.response || data.message;
-      if (!answerText) throw new Error('Invalid response format');
-
-      return {
-        answer: answerText,
-        citations: data.citations || [],
-      };
-    } catch (error) {
-      if (axios.isAxiosError(error) && error.response) {
-        throw new Error(error.response.data?.error || `Server error: ${error.response.status}`);
-      }
-      throw error instanceof Error ? error : new Error('An unexpected error occurred');
-    }
-  }
-
-  isConfigured(): boolean { return true; }
-}
-
 // --- Visual Components ---
 
-// 1. Grid Background
 const GridBackground = () => (
   <div className="fixed inset-0 z-0 pointer-events-none bg-[#050505]">
-    {/* Major Grid */}
     <div className="absolute inset-0 bg-[linear-gradient(to_right,#1a1a1a_1px,transparent_1px),linear-gradient(to_bottom,#1a1a1a_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)]" />
-    {/* Subtle Noise */}
     <div className="absolute inset-0 opacity-[0.02]" style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E")` }}></div>
   </div>
 );
 
-// 2. Modern Citation Card
+const IntentBadge = ({ intent }: { intent?: string }) => {
+  if (!intent || intent === 'general_research') return null;
+  const labels: Record<string, string> = {
+    fee_comparison: 'Fee Analysis',
+    term_frequency: 'Term Frequency',
+    licensing_reciprocity: 'Reciprocity',
+    fee_benchmarking: 'Fee Benchmarking',
+    amendment_history: 'Amendment History',
+    statutory_authority: 'Authority Check',
+    license_category_compare: 'License Comparison',
+    testing_requirements: 'Testing Reqs',
+  };
+  return (
+    <span className="text-[10px] font-mono px-2 py-0.5 rounded border border-zinc-700 text-zinc-400 bg-zinc-900">
+      {labels[intent] || intent}
+    </span>
+  );
+};
+
 const CitationCard = ({
   citation,
   onOpenPage
@@ -134,6 +78,9 @@ const CitationCard = ({
           {citation.document}
         </span>
         <div className="flex items-center gap-2 mt-0.5">
+          {citation.state && (
+            <span className="text-[10px] font-mono text-zinc-500">{citation.state}</span>
+          )}
           <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">
             Relevance {Math.round(citation.relevance * 100)}%
           </span>
@@ -155,7 +102,27 @@ const CitationCard = ({
   </div>
 );
 
-// 3. Brutalist Message Block
+const MetadataDisplay = ({ metadata }: { metadata?: ResponseMetadata }) => {
+  if (!metadata) return null;
+
+  return (
+    <>
+      {metadata.comparison_table && metadata.comparison_table.length > 0 && (
+        <ComparisonTable rows={metadata.comparison_table} statesCompared={metadata.states_compared} />
+      )}
+      {metadata.fee_table && metadata.fee_table.length > 0 && (
+        <FeeTable fees={metadata.fee_table} statesAnalyzed={metadata.states_analyzed} />
+      )}
+      {metadata.frequency_data && metadata.frequency_data.length > 0 && (
+        <TermFrequencyChart data={metadata.frequency_data} totalCount={metadata.total_count || 0} />
+      )}
+      {metadata.authority_chain && metadata.authority_chain.length > 0 && (
+        <AuthorityChain chain={metadata.authority_chain} hasAuthority={metadata.has_authority} />
+      )}
+    </>
+  );
+};
+
 const MessageBlock = ({
   message,
   onOpenCitationPage
@@ -173,10 +140,8 @@ const MessageBlock = ({
   };
 
   return (
-    <div className={`w-full max-w-4xl mx-auto mb-12 animate-in fade-in slide-in-from-bottom-4 duration-700 ease-out`}>
+    <div className="w-full max-w-4xl mx-auto mb-12 animate-in fade-in slide-in-from-bottom-4 duration-700 ease-out">
       <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
-
-        {/* Header / Meta */}
         <div className="flex items-center gap-3 mb-3">
           <span className="text-xs font-mono uppercase tracking-widest text-zinc-400">
             {isUser ? 'Query' : 'Response'}
@@ -185,19 +150,18 @@ const MessageBlock = ({
           <span className="text-[10px] font-mono text-zinc-500">
             {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
           </span>
+          {!isUser && <IntentBadge intent={message.intent} />}
         </div>
 
-        {/* Content Container */}
         <div className={`relative group w-full ${isUser ? 'pl-12' : 'pr-12'}`}>
           {isUser ? (
             <div className="text-right">
-               <h3 className="text-xl md:text-2xl font-light leading-snug tracking-tight text-white whitespace-pre-wrap">
-                 {message.content}
-               </h3>
+              <h3 className="text-xl md:text-2xl font-light leading-snug tracking-tight text-white whitespace-pre-wrap">
+                {message.content}
+              </h3>
             </div>
           ) : (
             <div className="relative pl-6 border-l border-zinc-800">
-              {/* Decorative accent line */}
               <div className="absolute left-[-1px] top-0 h-6 w-px bg-white/50"></div>
 
               <div className="prose prose-invert prose-p:text-zinc-300 prose-p:leading-7 prose-headings:font-light prose-headings:tracking-tight prose-headings:text-white prose-code:text-zinc-300 prose-code:bg-zinc-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded-sm prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-800 max-w-none">
@@ -210,7 +174,9 @@ const MessageBlock = ({
                 )}
               </div>
 
-              {/* Action Strip */}
+              {/* Phase 2: Structured metadata display */}
+              <MetadataDisplay metadata={message.metadata} />
+
               <div className="flex items-center gap-4 mt-6 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
                 <button
                   onClick={handleCopy}
@@ -221,7 +187,6 @@ const MessageBlock = ({
                 </button>
               </div>
 
-              {/* Citations Grid */}
               {message.citations && message.citations.length > 0 && (
                 <div className="mt-8 pt-6 border-t border-zinc-900">
                   <span className="block text-[10px] font-mono uppercase tracking-widest text-zinc-500 mb-4">
@@ -242,7 +207,6 @@ const MessageBlock = ({
   );
 };
 
-// 4. Loading Component (Technical)
 const ProcessingState = () => (
   <div className="w-full max-w-4xl mx-auto mb-12 animate-in fade-in duration-500">
     <div className="flex items-start gap-4">
@@ -250,8 +214,8 @@ const ProcessingState = () => (
         <div className="absolute left-[-1px] top-0 h-full w-px bg-gradient-to-b from-zinc-600 to-transparent animate-pulse"></div>
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-3">
-             <Cpu size={14} className="text-zinc-400 animate-spin-slow" />
-             <span className="text-xs font-mono text-zinc-300">Analyzing documents...</span>
+            <Cpu size={14} className="text-zinc-400 animate-spin-slow" />
+            <span className="text-xs font-mono text-zinc-300">Analyzing documents...</span>
           </div>
           <div className="h-4 w-32 bg-zinc-900 rounded animate-pulse"></div>
           <div className="h-4 w-48 bg-zinc-900 rounded animate-pulse delay-75"></div>
@@ -263,85 +227,26 @@ const ProcessingState = () => (
 
 // --- Main App ---
 function App() {
-  const [messages, setMessages] = useState<Message[]>([]);
+  const { messages, isLoading, sendMessage, clearChat } = useChat(API_ENDPOINT_CONFIG);
+  const { filters, showFilters, hasActiveFilters, updateFilters, toggleFilters } = useFilters();
+  const pdf = usePDF(DOCS_ENDPOINT_CONFIG, DOCS_API_KEY);
+
   const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
-  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
-  const [pdfPage, setPdfPage] = useState<number>(1);
-  const [pdfDocName, setPdfDocName] = useState<string>('');
-  const [isPdfLoading, setIsPdfLoading] = useState(false);
-  const [pdfError, setPdfError] = useState<string | null>(null);
-  const [pdfWidth, setPdfWidth] = useState<number>(900);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const chatService = useRef<ChatService | null>(null);
 
   useEffect(() => {
-    chatService.current = new ChatService(API_ENDPOINT_CONFIG);
-    const saved = localStorage.getItem('chat_history_v4');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved).map((m: any) => ({
-          ...m,
-          timestamp: new Date(m.timestamp)
-        }));
-        setMessages(parsed);
-      } catch (e) { console.error(e); }
-    }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem('chat_history_v4', JSON.stringify(messages));
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
-
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: input.trim(),
-      timestamp: new Date()
-    };
-
-    setMessages(prev => [...prev, userMsg]);
+    const content = input.trim();
     setInput('');
-    setIsLoading(true);
-
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-
-    try {
-      const response = await chatService.current!.sendMessage(userMsg.content);
-      const aiMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: response.answer,
-        citations: response.citations,
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, aiMsg]);
-    } catch (err) {
-      const errorMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: err instanceof Error ? err.message : 'Unknown error',
-        isError: true,
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMsg]);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const clearChat = () => {
-    if (confirm('RESET SESSION?')) {
-      setMessages([]);
-      localStorage.removeItem('chat_history_v4');
-    }
+    await sendMessage(content, { filters });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -351,42 +256,9 @@ function App() {
     }
   };
 
-  const handleOpenCitationPage = async (document: string, page: number) => {
-    setIsPdfLoading(true);
-    setPdfError(null);
-    setPdfUrl(null);
-    setPdfDocName(document);
-    setPdfPage(page);
-
-    if (!DOCS_ENDPOINT_CONFIG) {
-      setPdfError('Docs endpoint not configured.');
-      setIsPdfLoading(false);
-      return;
-    }
-
-    try {
-      const response = await axios.post(
-        DOCS_ENDPOINT_CONFIG,
-        { filename: document },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            ...(DOCS_API_KEY ? { 'x-api-key': DOCS_API_KEY } : {})
-          },
-          timeout: 30000
-        }
-      );
-
-      const data = response.data;
-      const url = typeof data?.body === 'string'
-        ? JSON.parse(data.body).url
-        : data?.url;
-      if (!url) throw new Error('No URL returned from docs API');
-      setPdfUrl(url);
-    } catch (err) {
-      setPdfError(err instanceof Error ? err.message : 'Failed to fetch PDF');
-    } finally {
-      setIsPdfLoading(false);
+  const handleClearChat = () => {
+    if (confirm('RESET SESSION?')) {
+      clearChat();
     }
   };
 
@@ -398,10 +270,23 @@ function App() {
       <nav className="fixed top-0 left-0 right-0 z-50 h-14 border-b border-zinc-900 bg-[#050505]/80 backdrop-blur-md flex items-center justify-between px-6">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 bg-white rounded-full"></div>
+          <span className="text-xs font-mono text-zinc-500 hidden md:block">SOS AI Innovation Hub — Phase 2</span>
         </div>
         <div className="flex items-center gap-4">
           <button
-            onClick={clearChat}
+            onClick={toggleFilters}
+            className={`flex items-center gap-1.5 text-xs font-mono transition-colors tracking-wider ${
+              hasActiveFilters ? 'text-white' : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            <Filter size={12} />
+            FILTERS
+            {hasActiveFilters && (
+              <span className="w-1.5 h-1.5 bg-white rounded-full"></span>
+            )}
+          </button>
+          <button
+            onClick={handleClearChat}
             className="text-xs font-mono text-zinc-400 hover:text-white transition-colors tracking-wider"
           >
             RESET_CONTEXT
@@ -412,19 +297,30 @@ function App() {
         </div>
       </nav>
 
+      {/* Filter Panel */}
+      {showFilters && (
+        <div className="fixed top-14 left-0 right-0 z-40 bg-[#050505]/95 backdrop-blur-md border-b border-zinc-800">
+          <div className="max-w-3xl mx-auto">
+            <FilterPanel filters={filters} onChange={updateFilters} />
+          </div>
+        </div>
+      )}
+
       {/* Main Content Area */}
       <main className="relative z-10 w-full h-full flex flex-col pt-14">
-
-        {/* Scrollable Chat Stream */}
         <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-track-transparent scrollbar-thumb-zinc-800">
           <div className="min-h-full flex flex-col justify-end pb-32 pt-12 px-4 md:px-8">
             {messages.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-1000">
                 <div className="text-center space-y-8 max-w-2xl">
-                   <h1 className="text-5xl md:text-7xl font-light tracking-tighter text-white">
+                  <h1 className="text-5xl md:text-7xl font-light tracking-tighter text-white">
                     SOS AI Innovation Hub <br/>
-                    <span className="text-zinc-500">Project Phase 1</span>
-                   </h1>
+                    <span className="text-zinc-500">Phase 2</span>
+                  </h1>
+                  <p className="text-sm font-mono text-zinc-500 max-w-lg mx-auto">
+                    Multi-state regulatory research across 7 states and 3 agency types.
+                    Use filters to narrow your search by state and agency.
+                  </p>
                 </div>
               </div>
             ) : (
@@ -433,7 +329,7 @@ function App() {
                   <MessageBlock
                     key={msg.id}
                     message={msg}
-                    onOpenCitationPage={handleOpenCitationPage}
+                    onOpenCitationPage={pdf.openPage}
                   />
                 ))}
                 {isLoading && <ProcessingState />}
@@ -477,28 +373,30 @@ function App() {
             </div>
 
             <div className="flex justify-between items-center mt-3 px-2">
-               <div className="flex gap-4">
-                 <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1.5">
-                   <Command size={10} /> RETURN to send
-                 </span>
-                 <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1.5">
-                   <Maximize2 size={10} /> SHIFT + RETURN for new line
-                 </span>
-               </div>
+              <div className="flex gap-4">
+                <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1.5">
+                  <Command size={10} /> RETURN to send
+                </span>
+                <span className="text-[10px] font-mono text-zinc-500 flex items-center gap-1.5">
+                  <Maximize2 size={10} /> SHIFT + RETURN for new line
+                </span>
+              </div>
+              {hasActiveFilters && (
+                <span className="text-[10px] font-mono text-zinc-500">
+                  Filtering: {filters.states?.join(', ') || 'All states'}
+                  {filters.agency_type ? ` / ${filters.agency_type}` : ''}
+                </span>
+              )}
             </div>
           </div>
         </div>
       </main>
 
       {/* PDF Viewer Overlay */}
-      {pdfDocName && (
+      {pdf.docName && (
         <div
           className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={() => {
-            setPdfDocName('');
-            setPdfUrl(null);
-            setPdfError(null);
-          }}
+          onClick={pdf.close}
         >
           <div
             className="w-full max-w-5xl max-h-[90vh] bg-[#0a0a0a] border border-zinc-800 rounded-lg shadow-2xl overflow-hidden flex flex-col"
@@ -507,16 +405,12 @@ function App() {
             <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
               <div className="flex items-center gap-3 min-w-0">
                 <span className="text-xs font-mono text-zinc-400">PDF</span>
-                <span className="text-sm font-mono text-zinc-200 truncate">{pdfDocName}</span>
-                <span className="text-xs font-mono text-zinc-500">p.{pdfPage}</span>
+                <span className="text-sm font-mono text-zinc-200 truncate">{pdf.docName}</span>
+                <span className="text-xs font-mono text-zinc-500">p.{pdf.page}</span>
               </div>
               <button
                 type="button"
-                onClick={() => {
-                  setPdfDocName('');
-                  setPdfUrl(null);
-                  setPdfError(null);
-                }}
+                onClick={pdf.close}
                 className="text-xs font-mono text-zinc-400 hover:text-white transition-colors"
               >
                 CLOSE
@@ -528,19 +422,19 @@ function App() {
               ref={(node) => {
                 if (node) {
                   const nextWidth = Math.min(node.clientWidth - 32, 1100);
-                  if (nextWidth > 0 && nextWidth !== pdfWidth) setPdfWidth(nextWidth);
+                  pdf.setWidth(nextWidth);
                 }
               }}
             >
-              {isPdfLoading && (
+              {pdf.isLoading && (
                 <span className="text-xs font-mono text-zinc-500">Loading PDF...</span>
               )}
-              {pdfError && (
-                <span className="text-xs font-mono text-red-400">{pdfError}</span>
+              {pdf.error && (
+                <span className="text-xs font-mono text-red-400">{pdf.error}</span>
               )}
-              {pdfUrl && !pdfError && (
-                <Document file={pdfUrl} loading="">
-                  <Page pageNumber={pdfPage} width={pdfWidth} />
+              {pdf.url && !pdf.error && (
+                <Document file={pdf.url} loading="">
+                  <Page pageNumber={pdf.page} width={pdf.width} />
                 </Document>
               )}
             </div>
@@ -548,7 +442,6 @@ function App() {
         </div>
       )}
 
-      {/* Utilities */}
       <style>{`
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
