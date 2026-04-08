@@ -214,15 +214,31 @@ class TXSoSCrawler(BaseCrawler):
         if not parts:
             return ""
 
-        # Build clean HTML
+        # Build clean HTML with proper paragraph wrapping
         html = (
             f"<!DOCTYPE html>\n<html lang='en'>\n"
             f"<head><meta charset='utf-8'><title>{label} - Texas Administrative Code</title></head>\n"
             f"<body>\n"
         )
         for part in parts:
-            escaped = part.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            html += f"<pre>{escaped}</pre>\n<hr>\n"
+            # Split into paragraphs on blank lines, wrap each in <p>
+            lines = part.split("\n")
+            current = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    if current:
+                        text = " ".join(current)
+                        escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        html += f"<p>{escaped}</p>\n"
+                        current = []
+                else:
+                    current.append(stripped)
+            if current:
+                text = " ".join(current)
+                escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                html += f"<p>{escaped}</p>\n"
+            html += "<hr>\n"
         html += "</body>\n</html>"
 
         return html

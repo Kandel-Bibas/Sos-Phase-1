@@ -1,2 +1,18 @@
+# Core
+boto3>=1.34.0
+pydantic>=2.5.0
+python-dotenv>=1.0.0
+
+# PDF extraction
+PyMuPDF>=1.24.0
+
+# OpenSearch
+opensearch-py>=2.4.0
+requests-aws4auth>=1.2.0
+
+# Web crawling
 requests>=2.31.0
 beautifulsoup4>=4.12.0
+
+# TX headless browser crawling (optional — not needed on SageMaker)
+# playwright>=1.40.0

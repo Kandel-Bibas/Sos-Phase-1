@@ -170,12 +170,26 @@ def clean_html_for_conversion(html_content: str) -> str:
 
         cleaned_text = "\n".join(cleaned_lines)
 
-        # Build a minimal clean HTML doc
+        # Build a minimal clean HTML doc using <p> tags for proper wrapping
+        paragraphs = []
+        current_para = []
+        for line in cleaned_lines:
+            if line.strip() == "":
+                if current_para:
+                    paragraphs.append(" ".join(current_para))
+                    current_para = []
+            else:
+                current_para.append(line)
+        if current_para:
+            paragraphs.append(" ".join(current_para))
+
+        body_html = "\n".join(f"<p>{p}</p>" for p in paragraphs)
+
         clean_html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{title}</title></head>
 <body>
 <h1>{title}</h1>
-<pre style="white-space:pre-wrap;font-family:serif">{cleaned_text}</pre>
+{body_html}
 </body></html>"""
 
         return clean_html

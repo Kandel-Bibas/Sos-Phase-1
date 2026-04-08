@@ -82,8 +82,8 @@ class AWSConfig(BaseModel):
 
     # Bedrock models
     bedrock_llm_model: str = Field(
-        default="mistral.mistral-large-3-675b-instruct",
-        description="Bedrock LLM model ID (Mistral Large 3 675B Instruct)"
+        default="us.anthropic.claude-sonnet-4-6",
+        description="Bedrock LLM model ID (Claude Sonnet 4.6 via inference profile)"
     )
     bedrock_embedding_model: str = Field(
         default="amazon.titan-embed-text-v2:0",
@@ -126,7 +126,7 @@ class AppConfig(BaseModel):
                 opensearch_endpoint=os.getenv("OPENSEARCH_ENDPOINT", ""),
                 opensearch_index=os.getenv("OPENSEARCH_INDEX", "ms-legal-abstracts"),
                 s3_bucket=os.getenv("S3_BUCKET", ""),
-                bedrock_llm_model=os.getenv("BEDROCK_LLM_MODEL", "mistral.mistral-large-3-675b-instruct"),
+                bedrock_llm_model=os.getenv("BEDROCK_LLM_MODEL", "us.anthropic.claude-sonnet-4-6"),
                 bedrock_embedding_model=os.getenv("BEDROCK_EMBEDDING_MODEL", "amazon.titan-embed-text-v2:0"),
                 lambda_function_name=os.getenv("LAMBDA_FUNCTION_NAME", "ms-sos-clara-chat-query"),
             )
