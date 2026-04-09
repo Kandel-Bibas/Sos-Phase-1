@@ -19,7 +19,7 @@ from backend.agents.orchestrator import Orchestrator
 
 # Environment variables
 OPENSEARCH_ENDPOINT = os.environ.get("OPENSEARCH_ENDPOINT", "")
-OPENSEARCH_INDEX = os.environ.get("OPENSEARCH_INDEX", "ms-legal-abstracts-v2")
+OPENSEARCH_INDEX = os.environ.get("OPENSEARCH_INDEX", "ms-legal-abstracts")
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "mistral.mistral-large-3-675b-instruct")
 BEDROCK_EMBEDDING_MODEL_ID = os.environ.get("BEDROCK_EMBEDDING_MODEL_ID", "amazon.titan-embed-text-v2:0")
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")

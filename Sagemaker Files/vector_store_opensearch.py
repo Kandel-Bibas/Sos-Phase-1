@@ -286,11 +286,11 @@ class OpenSearchVectorStore:
         if filter_document:
             filters.append({"term": {"source_document": filter_document}})
         if filter_state:
-            filters.append({"term": {"state": filter_state}})
+            filters.append({"term": {"state.keyword": filter_state}})
         if filter_agency_type:
-            filters.append({"term": {"agency_type": filter_agency_type}})
+            filters.append({"term": {"agency_type.keyword": filter_agency_type}})
         if filter_states:
-            filters.append({"terms": {"state": filter_states}})
+            filters.append({"terms": {"state.keyword": filter_states}})
         return filters
 
     def _knn_search(

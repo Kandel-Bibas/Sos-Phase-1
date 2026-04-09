@@ -51,9 +51,15 @@ export function useChat(apiEndpoint: string) {
     setIsLoading(true);
 
     try {
+      // Build conversation history for multi-turn context
+      const history = messages
+        .filter(m => !m.isError)
+        .map(m => ({ role: m.role, content: m.content }));
+
       const response = await chatService.current.sendMessage(content, {
         filters: options?.filters,
         mode: options?.mode,
+        history,
       });
 
       const aiMsg: Message = {
@@ -78,7 +84,7 @@ export function useChat(apiEndpoint: string) {
     } finally {
       setIsLoading(false);
     }
-  }, [isLoading]);
+  }, [isLoading, messages]);
 
   const clearChat = useCallback(() => {
     setMessages([]);

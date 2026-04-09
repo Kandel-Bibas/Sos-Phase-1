@@ -41,18 +41,18 @@ def hybrid_search(
     This mirrors the logic in vector_store_opensearch.py but works with
     raw opensearch-py clients (as used in Lambda).
     """
-    index = index or "ms-legal-abstracts-v2"
+    index = index or "ms-legal-abstracts"
     candidate_pool = top_k * 3
     query_embedding = get_embedding(bedrock_client, embedding_model_id, query)
 
-    # Build filters
+    # Build filters (use .keyword sub-field since main fields are text type)
     filters = []
     if filter_state:
-        filters.append({"term": {"state": filter_state}})
+        filters.append({"term": {"state.keyword": filter_state}})
     if filter_agency_type:
-        filters.append({"term": {"agency_type": filter_agency_type}})
+        filters.append({"term": {"agency_type.keyword": filter_agency_type}})
     if filter_states:
-        filters.append({"terms": {"state": filter_states}})
+        filters.append({"terms": {"state.keyword": filter_states}})
 
     # kNN search
     knn_query: dict[str, Any] = {
@@ -180,6 +180,22 @@ ORIGINAL TEXT (for precise citation):
     return "\n".join(parts)
 
 
+def _normalize_messages(messages: list[dict]) -> list[dict]:
+    """Normalize message content to Bedrock Converse format.
+
+    Frontend sends: {"role": "user", "content": "plain string"}
+    Bedrock expects: {"role": "user", "content": [{"text": "plain string"}]}
+    """
+    normalized = []
+    for msg in messages:
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            normalized.append({"role": msg["role"], "content": [{"text": content}]})
+        else:
+            normalized.append(msg)
+    return normalized
+
+
 def call_llm(
     bedrock_client,
     model_id: str,
@@ -193,7 +209,7 @@ def call_llm(
     response = bedrock_client.converse(
         modelId=model_id,
         system=[{"text": system_prompt}],
-        messages=messages,
+        messages=_normalize_messages(messages),
         inferenceConfig={
             "maxTokens": max_tokens,
             "temperature": temperature,

@@ -85,11 +85,14 @@ def search_abstracts(
     filter_state: str | None = None,
     filter_agency_type: str | None = None,
     filter_states: list[str] | None = None,
+    include_no_state: bool = False,
 ) -> list[dict]:
     """
     Hybrid search: kNN + BM25 + Reciprocal Rank Fusion.
 
     Phase 2 upgrade from kNN-only search. Supports state/agency filtering.
+    When include_no_state=True, also includes docs without a state field
+    (original Phase 1 data).
     """
     query_embedding = get_embedding(query)
     candidate_pool = top_k * 3
@@ -97,11 +100,24 @@ def search_abstracts(
     # Build filter clauses
     filters = []
     if filter_state:
-        filters.append({"term": {"state": filter_state}})
+        if include_no_state:
+            # Match state OR docs without state field (Phase 1 originals)
+            filters.append({"bool": {"should": [
+                {"term": {"state.keyword": filter_state}},
+                {"bool": {"must_not": {"exists": {"field": "state"}}}}
+            ]}})
+        else:
+            filters.append({"term": {"state.keyword": filter_state}})
     if filter_agency_type:
-        filters.append({"term": {"agency_type": filter_agency_type}})
+        filters.append({"term": {"agency_type.keyword": filter_agency_type}})
     if filter_states:
-        filters.append({"terms": {"state": filter_states}})
+        if include_no_state:
+            filters.append({"bool": {"should": [
+                {"terms": {"state.keyword": filter_states}},
+                {"bool": {"must_not": {"exists": {"field": "state"}}}}
+            ]}})
+        else:
+            filters.append({"terms": {"state.keyword": filter_states}})
 
     # Phase 1: kNN semantic search
     knn_query = {
@@ -229,7 +245,12 @@ def call_bedrock_llm(user_message: str, history: list[dict] | None = None) -> st
     """
     messages = []
     if history:
-        messages.extend(history)
+        for msg in history:
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                messages.append({"role": msg["role"], "content": [{"text": content}]})
+            else:
+                messages.append(msg)
     messages.append({"role": "user", "content": [{"text": user_message}]})
 
     response = bedrock_client.converse(
@@ -296,13 +317,20 @@ def lambda_handler(event, context):
         filter_agency_type = filters.get('agency_type')
         filter_states = filters.get('states')
 
-        # Search with hybrid search + filters
+        # Phase 1: restrict to MS-only docs (original Phase 1 docs without state field
+        # + Phase 2 MS docs). Prevents contamination from other states.
+        if not filter_state and not filter_states:
+            filter_states = ["MS"]
+            # Also include docs without a state field (original Phase 1 data)
+            filters['_include_no_state'] = True
+
         search_results = search_abstracts(
             query,
             top_k=5,
             filter_state=filter_state,
             filter_agency_type=filter_agency_type,
             filter_states=filter_states,
+            include_no_state=filters.get('_include_no_state', not filter_state and not filter_states),
         )
 
         # Format context

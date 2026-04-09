@@ -25,9 +25,10 @@
     "axios": "^1.13.2",
     "lucide-react": "^0.562.0",
     "pdfjs-dist": "4.8.69",
-    "react-pdf": "^9.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-markdown": "^10.1.0"
+    "react-markdown": "^10.1.0",
+    "react-pdf": "^9.2.0",
+    "remark-gfm": "^4.0.1"
   }
 }

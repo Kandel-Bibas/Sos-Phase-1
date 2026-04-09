@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Document, Page, pdfjs } from 'react-pdf';
 import {
   ArrowUp,
@@ -24,9 +25,12 @@ import { TermFrequencyChart } from './components/research/TermFrequencyChart';
 import { AuthorityChain } from './components/research/AuthorityChain';
 
 // --- Configuration ---
-const API_ENDPOINT_CONFIG = import.meta.env.VITE_API_ENDPOINT || 'http://localhost:8000/api/chat';
+const RESEARCH_ENDPOINT = import.meta.env.VITE_API_ENDPOINT || 'http://localhost:8000/api/research';
+const CHAT_ENDPOINT = import.meta.env.VITE_CHAT_ENDPOINT || 'http://localhost:8000/api/chat';
 const DOCS_ENDPOINT_CONFIG = import.meta.env.VITE_DOCS_ENDPOINT || '';
 const DOCS_API_KEY = import.meta.env.VITE_DOCS_API_KEY || '';
+
+type AppMode = 'chat' | 'research';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -164,13 +168,13 @@ const MessageBlock = ({
             <div className="relative pl-6 border-l border-zinc-800">
               <div className="absolute left-[-1px] top-0 h-6 w-px bg-white/50"></div>
 
-              <div className="prose prose-invert prose-p:text-zinc-300 prose-p:leading-7 prose-headings:font-light prose-headings:tracking-tight prose-headings:text-white prose-code:text-zinc-300 prose-code:bg-zinc-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded-sm prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-800 max-w-none">
+              <div className="markdown-content prose prose-invert prose-p:text-zinc-300 prose-p:leading-7 prose-headings:font-light prose-headings:tracking-tight prose-headings:text-white prose-code:text-zinc-300 prose-code:bg-zinc-900/50 prose-code:px-1 prose-code:py-0.5 prose-code:rounded-sm prose-pre:bg-zinc-900 prose-pre:border prose-pre:border-zinc-800 prose-table:text-sm max-w-none overflow-x-auto">
                 {message.isError ? (
                   <div className="p-4 border border-red-900/30 bg-red-900/10 text-red-200 text-sm font-mono">
                     ERROR: {message.content}
                   </div>
                 ) : (
-                  <ReactMarkdown>{message.content}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
                 )}
               </div>
 
@@ -227,12 +231,22 @@ const ProcessingState = () => (
 
 // --- Main App ---
 function App() {
-  const { messages, isLoading, sendMessage, clearChat } = useChat(API_ENDPOINT_CONFIG);
+  const [mode, setMode] = useState<AppMode>('research');
+  const apiEndpoint = mode === 'research' ? RESEARCH_ENDPOINT : CHAT_ENDPOINT;
+
+  const { messages, isLoading, sendMessage, clearChat } = useChat(apiEndpoint);
   const { filters, showFilters, hasActiveFilters, updateFilters, toggleFilters } = useFilters();
   const pdf = usePDF(DOCS_ENDPOINT_CONFIG, DOCS_API_KEY);
 
   const [input, setInput] = useState('');
   const [isFocused, setIsFocused] = useState(false);
+
+  const handleModeSwitch = (newMode: AppMode) => {
+    if (newMode !== mode) {
+      clearChat();
+      setMode(newMode);
+    }
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -246,7 +260,7 @@ function App() {
     const content = input.trim();
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    await sendMessage(content, { filters });
+    await sendMessage(content, mode === 'research' ? { filters } : undefined);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -270,21 +284,48 @@ function App() {
       <nav className="fixed top-0 left-0 right-0 z-50 h-14 border-b border-zinc-900 bg-[#050505]/80 backdrop-blur-md flex items-center justify-between px-6">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 bg-white rounded-full"></div>
-          <span className="text-xs font-mono text-zinc-500 hidden md:block">SOS AI Innovation Hub — Phase 2</span>
+          <span className="text-xs font-mono text-zinc-500 hidden md:block">SOS AI Innovation Hub</span>
         </div>
-        <div className="flex items-center gap-4">
+
+        {/* Mode Toggle */}
+        <div className="flex items-center bg-zinc-900/80 border border-zinc-800 rounded-md p-0.5">
           <button
-            onClick={toggleFilters}
-            className={`flex items-center gap-1.5 text-xs font-mono transition-colors tracking-wider ${
-              hasActiveFilters ? 'text-white' : 'text-zinc-400 hover:text-white'
+            onClick={() => handleModeSwitch('chat')}
+            className={`px-3 py-1.5 text-xs font-mono tracking-wider rounded transition-all ${
+              mode === 'chat'
+                ? 'bg-white text-black'
+                : 'text-zinc-400 hover:text-white'
             }`}
           >
-            <Filter size={12} />
-            FILTERS
-            {hasActiveFilters && (
-              <span className="w-1.5 h-1.5 bg-white rounded-full"></span>
-            )}
+            CHAT
           </button>
+          <button
+            onClick={() => handleModeSwitch('research')}
+            className={`px-3 py-1.5 text-xs font-mono tracking-wider rounded transition-all ${
+              mode === 'research'
+                ? 'bg-white text-black'
+                : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            RESEARCH
+          </button>
+        </div>
+
+        <div className="flex items-center gap-4">
+          {mode === 'research' && (
+            <button
+              onClick={toggleFilters}
+              className={`flex items-center gap-1.5 text-xs font-mono transition-colors tracking-wider ${
+                hasActiveFilters ? 'text-white' : 'text-zinc-400 hover:text-white'
+              }`}
+            >
+              <Filter size={12} />
+              FILTERS
+              {hasActiveFilters && (
+                <span className="w-1.5 h-1.5 bg-white rounded-full"></span>
+              )}
+            </button>
+          )}
           <button
             onClick={handleClearChat}
             className="text-xs font-mono text-zinc-400 hover:text-white transition-colors tracking-wider"
@@ -297,8 +338,8 @@ function App() {
         </div>
       </nav>
 
-      {/* Filter Panel */}
-      {showFilters && (
+      {/* Filter Panel (Research mode only) */}
+      {showFilters && mode === 'research' && (
         <div className="fixed top-14 left-0 right-0 z-40 bg-[#050505]/95 backdrop-blur-md border-b border-zinc-800">
           <div className="max-w-3xl mx-auto">
             <FilterPanel filters={filters} onChange={updateFilters} />
@@ -313,14 +354,29 @@ function App() {
             {messages.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-1000">
                 <div className="text-center space-y-8 max-w-2xl">
-                  <h1 className="text-5xl md:text-7xl font-light tracking-tighter text-white">
-                    SOS AI Innovation Hub <br/>
-                    <span className="text-zinc-500">Phase 2</span>
-                  </h1>
-                  <p className="text-sm font-mono text-zinc-500 max-w-lg mx-auto">
-                    Multi-state regulatory research across 7 states and 3 agency types.
-                    Use filters to narrow your search by state and agency.
-                  </p>
+                  {mode === 'chat' ? (
+                    <>
+                      <h1 className="text-5xl md:text-7xl font-light tracking-tighter text-white">
+                        SoS <br/>
+                        <span className="text-zinc-500">Legal Assistant</span>
+                      </h1>
+                      <p className="text-sm font-mono text-zinc-500 max-w-lg mx-auto">
+                        Ask questions about Mississippi Secretary of State regulations.
+                        Get answers with statutory citations.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <h1 className="text-5xl md:text-7xl font-light tracking-tighter text-white">
+                        Regulatory <br/>
+                        <span className="text-zinc-500">Research Assistant</span>
+                      </h1>
+                      <p className="text-sm font-mono text-zinc-500 max-w-lg mx-auto">
+                        Compare regulations, fees, and licensing requirements across
+                        7 states and 3 agency types. Use filters to narrow your search.
+                      </p>
+                    </>
+                  )}
                 </div>
               </div>
             ) : (
@@ -355,7 +411,10 @@ function App() {
                 onKeyDown={handleKeyDown}
                 onFocus={() => setIsFocused(true)}
                 onBlur={() => setIsFocused(false)}
-                placeholder="Enter regulation ID or paste text for verification..."
+                placeholder={mode === 'chat'
+                  ? "Ask about Mississippi SoS regulations..."
+                  : "Compare regulations across states, analyze fees, check reciprocity..."
+                }
                 className="flex-1 max-h-[200px] py-3 bg-transparent border-none focus:ring-0 focus:outline-none text-base font-light text-white placeholder-zinc-500 resize-none scrollbar-hide leading-relaxed"
                 rows={1}
                 disabled={isLoading}
