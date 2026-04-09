@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import DOMPurify from 'dompurify';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Document, Page, pdfjs } from 'react-pdf';
@@ -14,7 +15,7 @@ import {
   Cpu,
   Filter,
 } from 'lucide-react';
-import type { Citation, Message, ResearchFilters, ResponseMetadata } from './types';
+import type { Citation, Message, ResponseMetadata } from './types';
 import { useChat } from './hooks/useChat';
 import { useFilters } from './hooks/useFilters';
 import { usePDF } from './hooks/usePDF';
@@ -127,6 +128,11 @@ const MetadataDisplay = ({ metadata }: { metadata?: ResponseMetadata }) => {
   );
 };
 
+const hasRenderableHtml = (content: string) => /<\/?[a-z][\w:-]*[^>]*>/i.test(content);
+
+const unwrapHtmlCodeFences = (content: string) =>
+  content.replace(/```(?:html)?\s*([\s\S]*?)```/gi, '$1').trim();
+
 const MessageBlock = ({
   message,
   onOpenCitationPage
@@ -136,6 +142,12 @@ const MessageBlock = ({
 }) => {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
+  const htmlCandidate = useMemo(() => unwrapHtmlCodeFences(message.content), [message.content]);
+  const renderAsHtml = !isUser && !message.isError && hasRenderableHtml(htmlCandidate);
+  const sanitizedHtml = useMemo(
+    () => (renderAsHtml ? DOMPurify.sanitize(htmlCandidate, { USE_PROFILES: { html: true } }) : ''),
+    [renderAsHtml, htmlCandidate]
+  );
 
   const handleCopy = async () => {
     await navigator.clipboard.writeText(message.content);
@@ -173,6 +185,8 @@ const MessageBlock = ({
                   <div className="p-4 border border-red-900/30 bg-red-900/10 text-red-200 text-sm font-mono">
                     ERROR: {message.content}
                   </div>
+                ) : renderAsHtml ? (
+                  <div dangerouslySetInnerHTML={{ __html: sanitizedHtml }} />
                 ) : (
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
                 )}
@@ -504,6 +518,18 @@ function App() {
       <style>{`
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+        .prose table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        .prose th,
+        .prose td {
+          border: 1px solid #ffffff;
+        }
+        .prose th {
+          color: #ffffff;
+        }
 
         @keyframes spin-slow {
           from { transform: rotate(0deg); }
