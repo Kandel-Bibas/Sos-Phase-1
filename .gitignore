@@ -209,4 +209,11 @@ __marimo__/
 crawled_documents/
 /.DS_Store
 
+# Ingestion runtime state
+ingestion/ingestion_progress*.json
+
+# Lambda build artifacts
+lambda_deploy/build/
+lambda_deploy/docs_build/
+lambda_deploy/*.zip
 

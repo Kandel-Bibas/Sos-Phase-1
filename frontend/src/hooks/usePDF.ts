@@ -5,33 +5,44 @@ interface PDFState {
   url: string | null;
   page: number;
   docName: string;
+  state: string;
+  agencyType: string;
   isLoading: boolean;
   error: string | null;
   width: number;
 }
 
 export function usePDF(docsEndpoint: string, apiKey?: string) {
-  const [state, setState] = useState<PDFState>({
+  const [pdfState, setPdfState] = useState<PDFState>({
     url: null,
     page: 1,
     docName: '',
+    state: '',
+    agencyType: '',
     isLoading: false,
     error: null,
     width: 900,
   });
 
-  const openPage = useCallback(async (document: string, page: number) => {
-    setState(prev => ({
+  const openPage = useCallback(async (
+    document: string,
+    page: number,
+    state?: string,
+    agencyType?: string,
+  ) => {
+    setPdfState(prev => ({
       ...prev,
       isLoading: true,
       error: null,
       url: null,
       docName: document,
+      state: state || '',
+      agencyType: agencyType || '',
       page,
     }));
 
     if (!docsEndpoint) {
-      setState(prev => ({
+      setPdfState(prev => ({
         ...prev,
         error: 'Docs endpoint not configured.',
         isLoading: false,
@@ -42,7 +53,11 @@ export function usePDF(docsEndpoint: string, apiKey?: string) {
     try {
       const response = await axios.post(
         docsEndpoint,
-        { filename: document },
+        {
+          filename: document,
+          ...(state ? { state } : {}),
+          ...(agencyType ? { agency_type: agencyType } : {}),
+        },
         {
           headers: {
             'Content-Type': 'application/json',
@@ -59,9 +74,9 @@ export function usePDF(docsEndpoint: string, apiKey?: string) {
 
       if (!url) throw new Error('No URL returned from docs API');
 
-      setState(prev => ({ ...prev, url, isLoading: false }));
+      setPdfState(prev => ({ ...prev, url, isLoading: false }));
     } catch (err) {
-      setState(prev => ({
+      setPdfState(prev => ({
         ...prev,
         error: err instanceof Error ? err.message : 'Failed to fetch PDF',
         isLoading: false,
@@ -70,11 +85,11 @@ export function usePDF(docsEndpoint: string, apiKey?: string) {
   }, [docsEndpoint, apiKey]);
 
   const close = useCallback(() => {
-    setState(prev => ({ ...prev, docName: '', url: null, error: null }));
+    setPdfState(prev => ({ ...prev, docName: '', url: null, error: null }));
   }, []);
 
   const setWidth = useCallback((width: number) => {
-    setState(prev => {
+    setPdfState(prev => {
       if (width > 0 && width !== prev.width) {
         return { ...prev, width };
       }
@@ -82,5 +97,5 @@ export function usePDF(docsEndpoint: string, apiKey?: string) {
     });
   }, []);
 
-  return { ...state, openPage, close, setWidth };
+  return { ...pdfState, openPage, close, setWidth };
 }

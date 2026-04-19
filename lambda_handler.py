@@ -2,30 +2,36 @@
 AWS Lambda handler for CLaRa Legal Chatbot queries.
 This is for OpenSearch Managed (not Serverless).
 
-Phase 2 upgrade:
-- Hybrid search (kNN + BM25 + Reciprocal Rank Fusion) replaces kNN-only
-- Orchestrator routing for multi-agent intent handling
-- State/agency filtering support
-- Multi-turn conversation history
-- Structured metadata in response (comparison tables, frequency data, etc.)
-
-For the full orchestrated API, use backend.agents.lambdas.orchestrator_handler.
-This file maintains backward compatibility with the Phase 1 API contract
-while adding hybrid search and new parameters.
+V2 upgrade (dual-layer indexing):
+- Searches page-level records (record_type=page) with text_embedding field
+- Uses document-level records (record_type=document) for term counting
+- Hybrid search (kNN + BM25 + RRF) on page records
+- Phase 1 queries go to ms-phase1-legal index
+- Phase 2 queries go to multistate-phase2-legal index
+- Term frequency queries use scroll API on document records
 """
 
 import json
 import os
+import re
+import time
+import uuid
+from decimal import Decimal
 import boto3
+from botocore.config import Config
 from opensearchpy import OpenSearch, RequestsHttpConnection
 from requests_aws4auth import AWS4Auth
 
 # Environment variables
 OPENSEARCH_ENDPOINT = os.environ['OPENSEARCH_ENDPOINT']
-OPENSEARCH_INDEX = os.environ.get('OPENSEARCH_INDEX', 'ms-legal-abstracts')
+PHASE1_INDEX = os.environ.get('PHASE1_INDEX', 'ms-phase1-legal')
+PHASE2_INDEX = os.environ.get('PHASE2_INDEX', 'multistate-phase2-legal')
 BEDROCK_MODEL_ID = os.environ['BEDROCK_MODEL_ID']
 BEDROCK_EMBEDDING_MODEL_ID = os.environ['BEDROCK_EMBEDDING_MODEL_ID']
 AWS_REGION = os.environ['AWS_REGION']
+JOBS_TABLE = os.environ.get('JOBS_TABLE', 'ms-sos-query-jobs')
+LAMBDA_FUNCTION_NAME = os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'ms-sos-legal-v2')
+JOB_TTL_SECONDS = 3600  # 1 hour
 
 # Initialize clients
 credentials = boto3.Session().get_credentials()
@@ -33,7 +39,7 @@ awsauth = AWS4Auth(
     credentials.access_key,
     credentials.secret_key,
     AWS_REGION,
-    'es',  # 'es' for OpenSearch Managed (NOT 'aoss')
+    'es',
     session_token=credentials.token
 )
 
@@ -49,10 +55,17 @@ opensearch_client = OpenSearch(
 
 bedrock_client = boto3.client(
     service_name='bedrock-runtime',
-    region_name=AWS_REGION
+    region_name=AWS_REGION,
+    config=Config(read_timeout=300, connect_timeout=30, retries={'max_attempts': 2}),
 )
 
-# System prompt — expanded for multi-state research
+# DynamoDB for async job storage
+dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
+jobs_table = dynamodb.Table(JOBS_TABLE)
+
+# Lambda client for async self-invocation
+lambda_client = boto3.client('lambda', region_name=AWS_REGION)
+
 SYSTEM_PROMPT = """You are a legal research assistant for the Mississippi Secretary of State's office.
 Your role is to help staff verify if regulations comply with statutes across multiple states.
 
@@ -64,85 +77,68 @@ CRITICAL REQUIREMENTS:
 5. When comparing across states, clearly attribute each provision to its state."""
 
 
-def get_embedding(text: str) -> list[float]:
+def get_embedding(text):
     """Generate embedding using Bedrock Titan."""
-    body = json.dumps({"inputText": text, "dimensions": 1024, "normalize": True})
-
+    body = json.dumps({"inputText": text[:8000], "dimensions": 1024, "normalize": True})
     response = bedrock_client.invoke_model(
         modelId=BEDROCK_EMBEDDING_MODEL_ID,
         body=body,
         contentType='application/json',
         accept='application/json'
     )
-
-    response_body = json.loads(response['body'].read())
-    return response_body['embedding']
+    return json.loads(response['body'].read())['embedding']
 
 
-def search_abstracts(
-    query: str,
-    top_k: int = 5,
-    filter_state: str | None = None,
-    filter_agency_type: str | None = None,
-    filter_states: list[str] | None = None,
-    include_no_state: bool = False,
-) -> list[dict]:
+# ── Hybrid search on page records ───────────────────────────────────────
+
+def search_pages(
+    query,
+    index,
+    top_k=5,
+    filter_state=None,
+    filter_agency_type=None,
+    filter_states=None,
+):
     """
-    Hybrid search: kNN + BM25 + Reciprocal Rank Fusion.
+    Hybrid search (kNN + BM25 + RRF) on page-level records.
 
-    Phase 2 upgrade from kNN-only search. Supports state/agency filtering.
-    When include_no_state=True, also includes docs without a state field
-    (original Phase 1 data).
+    Only searches record_type=page (not document records).
+    Uses text_embedding field for kNN.
     """
     query_embedding = get_embedding(query)
     candidate_pool = top_k * 3
 
-    # Build filter clauses
-    filters = []
-    if filter_state:
-        if include_no_state:
-            # Match state OR docs without state field (Phase 1 originals)
-            filters.append({"bool": {"should": [
-                {"term": {"state.keyword": filter_state}},
-                {"bool": {"must_not": {"exists": {"field": "state"}}}}
-            ]}})
-        else:
-            filters.append({"term": {"state.keyword": filter_state}})
-    if filter_agency_type:
-        filters.append({"term": {"agency_type.keyword": filter_agency_type}})
-    if filter_states:
-        if include_no_state:
-            filters.append({"bool": {"should": [
-                {"terms": {"state.keyword": filter_states}},
-                {"bool": {"must_not": {"exists": {"field": "state"}}}}
-            ]}})
-        else:
-            filters.append({"terms": {"state.keyword": filter_states}})
+    # Base filter: only page records
+    filters = [{"term": {"record_type": "page"}}]
 
-    # Phase 1: kNN semantic search
+    if filter_state:
+        filters.append({"term": {"state": filter_state}})
+    if filter_agency_type:
+        filters.append({"term": {"agency_type": filter_agency_type}})
+    if filter_states:
+        filters.append({"terms": {"state": filter_states}})
+
+    # kNN semantic search on text_embedding
     knn_query = {
         "size": candidate_pool,
         "query": {
-            "knn": {
-                "embedding_vector": {
-                    "vector": query_embedding,
-                    "k": candidate_pool
-                }
-            }
-        }
-    }
-    if filters:
-        knn_query["query"] = {
             "bool": {
-                "must": [knn_query["query"]],
+                "must": [{
+                    "knn": {
+                        "text_embedding": {
+                            "vector": query_embedding,
+                            "k": candidate_pool
+                        }
+                    }
+                }],
                 "filter": filters
             }
         }
-
-    knn_response = opensearch_client.search(index=OPENSEARCH_INDEX, body=knn_query)
+    }
+    knn_response = opensearch_client.search(index=index, body=knn_query)
     knn_hits = knn_response['hits']['hits']
 
-    # Phase 2: BM25 keyword search
+    # BM25 keyword search on text fields
     bm25_query = {
         "size": candidate_pool,
         "query": {
@@ -153,23 +149,23 @@ def search_abstracts(
                     {"match": {"section_identifier": {"query": query, "boost": 3.0}}},
                     {"match": {"abstract_text": {"query": query, "boost": 2.0}}},
                     {"match": {"core_rule": {"query": query, "boost": 2.0}}},
-                    {"match": {"original_text": {"query": query, "boost": 1.5}}},
+                    {"match": {"raw_text": {"query": query, "boost": 1.5}}},
                     {"match": {"compliance_requirements": {"query": query, "boost": 1.5}}},
+                    {"match": {"testing_requirements": {"query": query, "boost": 1.5}}},
+                    {"match": {"reciprocity_provisions": {"query": query, "boost": 1.5}}},
                     {"match": {"legal_entities": {"query": query, "boost": 1.0}}},
                 ],
-                "minimum_should_match": 1
+                "minimum_should_match": 1,
+                "filter": filters,
             }
         }
     }
-    if filters:
-        bm25_query["query"]["bool"]["filter"] = filters
-
-    bm25_response = opensearch_client.search(index=OPENSEARCH_INDEX, body=bm25_query)
+    bm25_response = opensearch_client.search(index=index, body=bm25_query)
     bm25_hits = bm25_response['hits']['hits']
 
-    # Phase 3: Reciprocal Rank Fusion
+    # RRF merge
     rrf_k = 60
-    scores: dict[str, dict] = {}
+    scores = {}
 
     for rank, hit in enumerate(knn_hits):
         doc_id = hit['_id']
@@ -194,55 +190,142 @@ def search_abstracts(
         results.append({
             'abstract_text': src.get('abstract_text', ''),
             'core_rule': src.get('core_rule', ''),
-            'source_document': src.get('source_document', ''),
-            'page_numbers': src.get('page_numbers', []),
+            'filename': src.get('filename', ''),
+            'page_number': src.get('page_number', 0),
             'section_identifier': src.get('section_identifier'),
             'statute_codes': src.get('statute_codes', []),
-            'original_text': (src.get('original_text') or '')[:2000],
+            'raw_text': (src.get('raw_text') or '')[:600],
             'score': data['rrf_score'],
             'state': src.get('state', 'MS'),
             'agency_type': src.get('agency_type', ''),
+            'fee_amounts': src.get('fee_amounts', []),
+            'testing_requirements': src.get('testing_requirements'),
+            'reciprocity_provisions': src.get('reciprocity_provisions'),
+            'license_categories': src.get('license_categories', []),
         })
 
     return results
 
 
-def format_context(results: list[dict]) -> str:
-    """Format search results into context for LLM."""
+# ── Term frequency on document records ──────────────────────────────────
+
+def count_term_in_documents(term, index, filter_state=None, filter_states=None):
+    """
+    Count exact term occurrences across ALL document records using scroll API.
+
+    Searches record_type=document (full text per PDF), not page records.
+    Returns total count + per-document breakdown with references.
+    """
+    filters = [{"term": {"record_type": "document"}}]
+    if filter_state:
+        filters.append({"term": {"state": filter_state}})
+    if filter_states:
+        filters.append({"terms": {"state": filter_states}})
+
+    # Match documents containing the term
+    query = {
+        "size": 100,
+        "_source": ["filename", "full_text", "state", "agency_type", "total_pages"],
+        "query": {
+            "bool": {
+                "must": [{"match": {"full_text": term}}],
+                "filter": filters,
+            }
+        }
+    }
+
+    response = opensearch_client.search(
+        index=index,
+        body=query,
+        scroll='2m',
+    )
+
+    total_count = 0
+    per_document = []
+    term_lower = term.lower()
+
+    # Process all pages via scroll
+    while True:
+        hits = response['hits']['hits']
+        if not hits:
+            break
+
+        for hit in hits:
+            src = hit['_source']
+            full_text = (src.get('full_text') or '').lower()
+            count = full_text.count(term_lower)
+            if count > 0:
+                total_count += count
+
+                # Find page references
+                page_refs = []
+                for match in re.finditer(r'\[Page (\d+)\]', src.get('full_text', '')):
+                    page_num = int(match.group(1))
+                    # Check if term appears near this page marker
+                    start = match.start()
+                    next_page = src.get('full_text', '').find('[Page ', start + 1)
+                    if next_page == -1:
+                        next_page = len(src.get('full_text', ''))
+                    page_text = src.get('full_text', '')[start:next_page].lower()
+                    if term_lower in page_text:
+                        page_refs.append(page_num)
+
+                per_document.append({
+                    'filename': src.get('filename', ''),
+                    'state': src.get('state', 'MS'),
+                    'agency_type': src.get('agency_type', ''),
+                    'count': count,
+                    'pages': page_refs[:20],  # cap references
+                })
+
+        scroll_id = response.get('_scroll_id')
+        if not scroll_id:
+            break
+        response = opensearch_client.scroll(scroll_id=scroll_id, scroll='2m')
+
+    # Sort by count descending
+    per_document.sort(key=lambda x: x['count'], reverse=True)
+
+    return {
+        'total_count': total_count,
+        'documents_with_term': len(per_document),
+        'breakdown': per_document,
+    }
+
+
+# ── Context formatting ──────────────────────────────────────────────────
+
+def format_context(results):
+    """Format page search results into context for LLM."""
     if not results:
         return "No relevant legal documents found for this query."
 
-    context_parts = []
-    for result in results:
-        pages = ", ".join(str(p) for p in result['page_numbers'])
-        section = result['section_identifier'] or 'N/A'
-        state = result.get('state', 'MS')
+    parts = []
+    for r in results:
+        section = r['section_identifier'] or 'N/A'
+        state = r.get('state', 'MS')
+        statutes = ', '.join(r['statute_codes']) if r['statute_codes'] else 'None identified'
 
-        context_parts.append(f"""
----
-STATE: {state}
-SOURCE: {result['source_document']} (Section: {section}, Pages: {pages})
-RELEVANCE SCORE: {result['score']:.4f}
-STATUTE CODES: {', '.join(result['statute_codes']) if result['statute_codes'] else 'None identified'}
+        parts.append("""---
+STATE: %s
+SOURCE: %s (Section: %s, Page: %s)
+RELEVANCE SCORE: %.4f
+STATUTE CODES: %s
 
-SUMMARY: {result['abstract_text']}
+SUMMARY: %s
 
-CORE RULE: {result['core_rule']}
+CORE RULE: %s
 
 ORIGINAL TEXT (for precise citation):
-{result['original_text']}
----""")
+%s
+---""" % (state, r['filename'], section, r['page_number'], r['score'],
+          statutes, r['abstract_text'], r.get('core_rule', 'N/A'), r['raw_text']))
 
-    return "\n".join(context_parts)
+    return "\n".join(parts)
 
 
-def call_bedrock_llm(user_message: str, history: list[dict] | None = None) -> str:
-    """
-    Call Bedrock LLM via Converse API (model-agnostic).
-
-    Phase 2 upgrade: uses the Converse API for model-agnostic calling
-    and supports conversation history for multi-turn.
-    """
+def call_bedrock_llm(user_message, history=None):
+    """Call Bedrock LLM via Converse API."""
     messages = []
     if history:
         for msg in history:
@@ -258,7 +341,7 @@ def call_bedrock_llm(user_message: str, history: list[dict] | None = None) -> st
         system=[{"text": SYSTEM_PROMPT}],
         messages=messages,
         inferenceConfig={
-            "maxTokens": 4096,
+            "maxTokens": 2048,  # Capped to keep latency under API Gateway 29s limit
             "temperature": 0.1,
             "topP": 0.9,
         },
@@ -267,31 +350,182 @@ def call_bedrock_llm(user_message: str, history: list[dict] | None = None) -> st
     return response['output']['message']['content'][0]['text']
 
 
+# ── Intent detection ────────────────────────────────────────────────────
+
+# State name → code mapping for detecting cross-state queries
+STATE_NAMES = {
+    'alabama': 'AL', 'arkansas': 'AR', 'georgia': 'GA', 'louisiana': 'LA',
+    'mississippi': 'MS', 'tennessee': 'TN', 'texas': 'TX',
+    ' al ': 'AL', ' ar ': 'AR', ' ga ': 'GA', ' la ': 'LA',
+    ' ms ': 'MS', ' tn ': 'TN', ' tx ': 'TX',
+}
+
+
+def detect_states(query):
+    """Return list of state codes mentioned in the query."""
+    q = ' ' + query.lower() + ' '
+    found = []
+    for name, code in STATE_NAMES.items():
+        if name in q and code not in found:
+            found.append(code)
+    return found
+
+
+def detect_intent(query):
+    """
+    Intent detection from query text.
+
+    Returns: 'term_count', 'comparison', 'reciprocity', or 'general'
+    """
+    q = query.lower()
+
+    # Term counting patterns
+    count_patterns = [
+        'how many times', 'how often', 'count of', 'frequency of',
+        'number of times', 'appearances of', 'occurrences',
+    ]
+    if any(p in q for p in count_patterns):
+        return 'term_count'
+
+    # Reciprocity patterns (special case of cross-state)
+    reciprocity_patterns = [
+        'reciprocity', 'reciprocal', 'moved to', 'moving to',
+        'transfer license', 'licensed in another state',
+        'holds a license in', 'held a license in',
+    ]
+    if any(p in q for p in reciprocity_patterns):
+        return 'reciprocity'
+
+    # Comparison patterns
+    compare_patterns = [
+        'compare', 'comparison', 'how does', 'differ', 'difference',
+        'versus', ' vs ', 'other states', 'across states',
+    ]
+    if any(p in q for p in compare_patterns):
+        return 'comparison'
+
+    # If query mentions 2+ states, treat as comparison
+    if len(detect_states(query)) >= 2:
+        return 'comparison'
+
+    return 'general'
+
+
+def extract_search_term(query):
+    """Extract the term to count from a frequency query."""
+    # Look for quoted terms first
+    quoted = re.findall(r'["\']([^"\']+)["\']', query)
+    if quoted:
+        return quoted[0]
+
+    # Common patterns: "how many times does X appear"
+    patterns = [
+        r'(?:term|word|phrase)\s+["\']?(\w+)["\']?',
+        r'(?:does|do)\s+(?:the\s+)?(?:term\s+|word\s+)?["\']?(\w+)["\']?\s+appear',
+        r'(?:times|occurrences?\s+of)\s+["\']?(\w+)["\']?',
+        r'(?:count|frequency)\s+(?:of\s+)?["\']?(\w+)["\']?',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            return match.group(1)
+
+    return None
+
+
+# ── DynamoDB job helpers ────────────────────────────────────────────────
+
+def _create_job(query, mode, filters, history):
+    """Create a new pending job in DynamoDB and return job_id."""
+    job_id = str(uuid.uuid4())
+    now = int(time.time())
+    jobs_table.put_item(Item={
+        'job_id': job_id,
+        'status': 'pending',
+        'query': query,
+        'mode': mode,
+        'filters': filters or {},
+        'history_count': len(history) if history else 0,
+        'created_at': now,
+        'ttl': now + JOB_TTL_SECONDS,
+    })
+    return job_id
+
+
+def _update_job(job_id, **fields):
+    """Update job fields in DynamoDB."""
+    update_expr_parts = []
+    expr_attr_names = {}
+    expr_attr_vals = {}
+    for k, v in fields.items():
+        placeholder_name = '#%s' % k
+        placeholder_val = ':%s' % k
+        update_expr_parts.append('%s = %s' % (placeholder_name, placeholder_val))
+        expr_attr_names[placeholder_name] = k
+        expr_attr_vals[placeholder_val] = _to_ddb(v)
+
+    jobs_table.update_item(
+        Key={'job_id': job_id},
+        UpdateExpression='SET ' + ', '.join(update_expr_parts),
+        ExpressionAttributeNames=expr_attr_names,
+        ExpressionAttributeValues=expr_attr_vals,
+    )
+
+
+def _to_ddb(value):
+    """Convert Python types to DynamoDB-safe types (no floats)."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: _to_ddb(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_to_ddb(v) for v in value]
+    return value
+
+
+def _from_ddb(value):
+    """Convert DynamoDB types back to JSON-friendly Python types."""
+    if isinstance(value, Decimal):
+        return float(value) if value % 1 else int(value)
+    if isinstance(value, dict):
+        return {k: _from_ddb(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_from_ddb(v) for v in value]
+    return value
+
+
+def _get_job(job_id):
+    """Fetch a job by ID. Returns dict or None."""
+    resp = jobs_table.get_item(Key={'job_id': job_id})
+    item = resp.get('Item')
+    return _from_ddb(item) if item else None
+
+
+# ── Main handler ────────────────────────────────────────────────────────
+
 def lambda_handler(event, context):
     """
-    Main Lambda handler.
+    Main Lambda handler — dispatches between three modes:
 
-    Phase 2 additions:
-    - 'filters' parameter for state/agency filtering
-    - 'history' parameter for multi-turn conversation
-    - 'mode' parameter for research/compare/count modes
-    - Response includes 'intent' and 'metadata' fields
+    1. POST with body → create async job, return 202 + job_id
+    2. GET /v2/query/status/{job_id} → return job status + result
+    3. Internal async invocation (event has _async_job_id) → process query,
+       write result to DynamoDB
     """
     try:
-        # Handle CORS preflight
-        if event.get('httpMethod') == 'OPTIONS':
-            return {
-                'statusCode': 200,
-                'headers': {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*',
-                    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-                    'Access-Control-Allow-Methods': 'POST,OPTIONS',
-                },
-                'body': ''
-            }
+        # ── Mode 1: Internal async invocation ────────────────────────
+        if event.get('_async_job_id'):
+            return _run_async_job(event)
 
-        # Parse request
+        # ── Mode 2: HTTP GET (status check) ──────────────────────────
+        http_method = event.get('httpMethod', 'POST')
+        if http_method == 'OPTIONS':
+            return _cors_response()
+
+        if http_method == 'GET':
+            return _handle_status_check(event)
+
+        # ── Mode 3: HTTP POST (enqueue + return 202) ─────────────────
         if 'body' in event:
             body = json.loads(event['body']) if isinstance(event['body'], str) else event['body']
         else:
@@ -299,95 +533,323 @@ def lambda_handler(event, context):
 
         query = body.get('query', '')
         if not query:
-            return {
-                'statusCode': 400,
-                'headers': {
-                    'Content-Type': 'application/json',
-                    'Access-Control-Allow-Origin': '*'
-                },
-                'body': json.dumps({'error': 'Query parameter is required'})
-            }
+            return _error(400, 'Query parameter is required')
 
-        # Phase 2: extract new parameters
-        filters = body.get('filters', {})
-        history = body.get('history')
-        mode = body.get('mode')
+        filters = body.get('filters', {}) or {}
+        history = body.get('history') or []
+        mode = body.get('mode', 'research')
 
-        filter_state = filters.get('state')
-        filter_agency_type = filters.get('agency_type')
-        filter_states = filters.get('states')
+        # If sync=true, run synchronously (for testing or quick queries)
+        if body.get('sync'):
+            return _process_query_sync(query, mode, filters, history)
 
-        # Phase 1: restrict to MS-only docs (original Phase 1 docs without state field
-        # + Phase 2 MS docs). Prevents contamination from other states.
-        if not filter_state and not filter_states:
-            filter_states = ["MS"]
-            # Also include docs without a state field (original Phase 1 data)
-            filters['_include_no_state'] = True
+        # Default: async — create job, dispatch worker, return 202
+        job_id = _create_job(query, mode, filters, history)
 
-        search_results = search_abstracts(
-            query,
-            top_k=5,
-            filter_state=filter_state,
-            filter_agency_type=filter_agency_type,
-            filter_states=filter_states,
-            include_no_state=filters.get('_include_no_state', not filter_state and not filter_states),
+        # Self-invoke async to do the heavy work
+        lambda_client.invoke(
+            FunctionName=LAMBDA_FUNCTION_NAME,
+            InvocationType='Event',
+            Payload=json.dumps({
+                '_async_job_id': job_id,
+                'query': query,
+                'mode': mode,
+                'filters': filters,
+                'history': history,
+            }).encode(),
         )
 
-        # Format context
-        ctx = format_context(search_results)
-
-        # Build prompt
-        user_message = f"""Based on the following legal documents, please answer the user's question.
-Remember: You MUST cite specific statutory authority for every claim.
-
-RETRIEVED LEGAL CONTEXT:
-{ctx}
-
-USER QUESTION: {query}
-
-Provide a clear, well-cited answer. If the context doesn't contain relevant information, clearly state this."""
-
-        # Get response from LLM
-        answer = call_bedrock_llm(user_message, history=history)
-
-        # Build response (backward compatible + new fields)
-        citations = [
-            {
-                'document': r['source_document'],
-                'section': r['section_identifier'],
-                'pages': r['page_numbers'],
-                'statute_codes': r['statute_codes'],
-                'relevance': round(r['score'], 3),
-                'state': r.get('state', 'MS'),
-                'agency_type': r.get('agency_type', ''),
-            }
-            for r in search_results
-        ]
-
-        response_body = {
-            'answer': answer,
-            'citations': citations,
-            'query': query,
-            'intent': 'general_research',
-            'metadata': {},
-        }
-
         return {
-            'statusCode': 200,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps(response_body)
+            'statusCode': 202,
+            'headers': _cors_headers(),
+            'body': json.dumps({
+                'job_id': job_id,
+                'status': 'pending',
+                'poll_url': '/v2/query/status/%s' % job_id,
+            })
         }
 
     except Exception as e:
-        print(f"Error: {str(e)}")
-        return {
-            'statusCode': 500,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps({'error': str(e)})
+        print("Error: %s" % str(e))
+        import traceback
+        traceback.print_exc()
+        return _error(500, str(e))
+
+
+def _handle_status_check(event):
+    """Handle GET requests for job status."""
+    path_params = event.get('pathParameters') or {}
+    query_string = event.get('queryStringParameters') or {}
+    job_id = path_params.get('job_id') or query_string.get('job_id') or ''
+
+    # Fallback: parse from URL path if pathParameters isn't populated
+    if not job_id:
+        path = event.get('path') or event.get('rawPath') or ''
+        match = re.search(r'/status/([A-Za-z0-9\-]+)', path)
+        if match:
+            job_id = match.group(1)
+
+    if not job_id:
+        return _error(400, 'job_id is required')
+
+    job = _get_job(job_id)
+    if not job:
+        return _error(404, 'Job not found: %s' % job_id)
+
+    # Return whatever fields are present
+    response = {
+        'job_id': job_id,
+        'status': job.get('status', 'unknown'),
+    }
+
+    if job.get('status') == 'done':
+        response.update({
+            'answer': job.get('answer', ''),
+            'citations': job.get('citations', []),
+            'intent': job.get('intent', 'general'),
+            'metadata': job.get('metadata', {}),
+        })
+    elif job.get('status') == 'failed':
+        response['error'] = job.get('error', 'Unknown error')
+
+    return _success(response)
+
+
+def _run_async_job(event):
+    """Worker mode — invoked async to process a query and write to DynamoDB."""
+    job_id = event['_async_job_id']
+    print("[async] Processing job %s" % job_id)
+
+    try:
+        result = _process_query(
+            event['query'],
+            event.get('mode', 'research'),
+            event.get('filters', {}),
+            event.get('history', []),
+        )
+
+        _update_job(
+            job_id,
+            status='done',
+            answer=result['answer'],
+            citations=result['citations'],
+            intent=result['intent'],
+            metadata=result['metadata'],
+            completed_at=int(time.time()),
+        )
+        print("[async] Job %s completed" % job_id)
+        return {'statusCode': 200, 'body': 'ok'}
+
+    except Exception as e:
+        print("[async] Job %s failed: %s" % (job_id, e))
+        import traceback
+        traceback.print_exc()
+        _update_job(
+            job_id,
+            status='failed',
+            error=str(e),
+            completed_at=int(time.time()),
+        )
+        return {'statusCode': 500, 'body': str(e)}
+
+
+def _process_query_sync(query, mode, filters, history):
+    """Run a query synchronously (for debug or quick queries with sync=true)."""
+    try:
+        result = _process_query(query, mode, filters, history)
+        return _success({
+            'answer': result['answer'],
+            'citations': result['citations'],
+            'query': query,
+            'intent': result['intent'],
+            'metadata': result['metadata'],
+        })
+    except Exception as e:
+        return _error(500, str(e))
+
+
+def _process_query(query, mode, filters, history):
+    """
+    Heavy processing — runs the actual search + LLM generation.
+    Returns a dict {answer, citations, intent, metadata}.
+    """
+    filter_state = filters.get('state')
+    filter_agency_type = filters.get('agency_type')
+    filter_states = filters.get('states')
+
+    intent = detect_intent(query)
+
+    # STRICT index routing by UI mode
+    target_index = PHASE1_INDEX if mode == 'chat' else PHASE2_INDEX
+
+    # ── Term count branch ───────────────────────────────────────────
+    if intent == 'term_count':
+        term = extract_search_term(query)
+        if not term:
+            intent = 'general'  # fall through to general search
+        else:
+            f_state = filter_state
+            f_states = filter_states
+            if mode == 'chat' and not f_state and not f_states:
+                f_state = "MS"
+
+            freq_data = count_term_in_documents(
+                term, target_index, filter_state=f_state, filter_states=f_states,
+            )
+
+            freq_summary = "Term: '%s'\nTotal occurrences: %d across %d documents\n\n" % (
+                term, freq_data['total_count'], freq_data['documents_with_term'])
+            for doc in freq_data['breakdown'][:20]:
+                pages_str = ", ".join(str(p) for p in doc['pages'][:10])
+                freq_summary += "- %s (%s): %d occurrences (pages: %s)\n" % (
+                    doc['filename'], doc['state'], doc['count'], pages_str or 'N/A')
+
+            user_message = """Based on the following term frequency analysis, answer the user's question.
+
+TERM FREQUENCY DATA:
+%s
+
+USER QUESTION: %s
+
+Provide the count, list the documents where the term appears, and note any patterns.""" % (
+                freq_summary, query)
+
+            answer = call_bedrock_llm(user_message, history=history)
+
+            return {
+                'answer': answer,
+                'citations': [],
+                'intent': 'term_count',
+                'metadata': freq_data,
+            }
+
+    # ── General / comparison search ─────────────────────────────────
+    if mode == 'chat':
+        if not filter_state:
+            filter_state = "MS"
+        filter_states = None
+
+        search_results = search_pages(
+            query,
+            index=target_index,
+            top_k=8,
+            filter_state=filter_state,
+            filter_agency_type=filter_agency_type,
+        )
+    else:
+        # RESEARCH mode — Phase 2 index
+        is_multi_state_query = intent in ('comparison', 'reciprocity')
+
+        if is_multi_state_query:
+            if not filter_states:
+                detected = detect_states(query)
+                if detected:
+                    if intent == 'reciprocity' and 'MS' not in detected:
+                        detected.insert(0, 'MS')
+                    filter_states = detected
+                else:
+                    filter_states = ["MS", "AL", "LA", "TN", "AR", "GA", "TX"]
+
+            # Per-state budget — kept modest since Mistral is the bottleneck
+            # More context = more tokens = longer Mistral latency
+            if len(filter_states) <= 2:
+                per_state_k = 6
+            elif len(filter_states) <= 4:
+                per_state_k = 4
+            else:
+                per_state_k = 3
+
+            search_results = []
+            for state in filter_states:
+                state_results = search_pages(
+                    query,
+                    index=target_index,
+                    top_k=per_state_k,
+                    filter_state=state,
+                    filter_agency_type=filter_agency_type,
+                )
+                search_results.extend(state_results)
+
+            search_results.sort(key=lambda r: r['score'], reverse=True)
+        else:
+            search_results = search_pages(
+                query,
+                index=target_index,
+                top_k=10,
+                filter_state=filter_state,
+                filter_agency_type=filter_agency_type,
+                filter_states=filter_states,
+            )
+
+    ctx = format_context(search_results)
+
+    user_message = """Based on the following legal documents, please answer the user's question.
+Remember: You MUST cite specific statutory authority for every claim.
+
+RETRIEVED LEGAL CONTEXT:
+%s
+
+USER QUESTION: %s
+
+Provide a clear, well-cited answer. If the context doesn't contain relevant information, clearly state this.""" % (ctx, query)
+
+    answer = call_bedrock_llm(user_message, history=history)
+
+    citations = [
+        {
+            'document': r['filename'],
+            'section': r['section_identifier'],
+            'pages': [r['page_number']],
+            'statute_codes': r['statute_codes'],
+            'relevance': round(r['score'], 3),
+            'state': r.get('state', 'MS'),
+            'agency_type': r.get('agency_type', ''),
         }
+        for r in search_results
+    ]
+
+    return {
+        'answer': answer,
+        'citations': citations,
+        'intent': intent,
+        'metadata': {
+            'mode': mode,
+            'index_used': target_index,
+            'states_searched': filter_states or ([filter_state] if filter_state else []),
+        },
+    }
+
+
+# ── HTTP response helpers ───────────────────────────────────────────────
+
+def _cors_headers():
+    return {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization',
+        'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    }
+
+
+def _cors_response():
+    return {
+        'statusCode': 200,
+        'headers': _cors_headers(),
+        'body': '',
+    }
+
+
+def _success(body):
+    return {
+        'statusCode': 200,
+        'headers': _cors_headers(),
+        'body': json.dumps(body),
+    }
+
+
+def _error(status, message):
+    return {
+        'statusCode': status,
+        'headers': _cors_headers(),
+        'body': json.dumps({'error': message}),
+    }

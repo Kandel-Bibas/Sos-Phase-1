@@ -35,7 +35,7 @@ export function useChat(apiEndpoint: string) {
     content: string,
     options?: {
       filters?: ResearchFilters;
-      mode?: 'research' | 'compare' | 'count';
+      mode?: 'research' | 'chat' | 'compare' | 'count';
     }
   ) => {
     if (!content.trim() || isLoading || !chatService.current) return;

@@ -13,6 +13,7 @@ import {
   Scale,
   Cpu,
   Filter,
+  ExternalLink,
 } from 'lucide-react';
 import type { Citation, Message, ResearchFilters, ResponseMetadata } from './types';
 import { useChat } from './hooks/useChat';
@@ -23,6 +24,8 @@ import { ComparisonTable } from './components/research/ComparisonTable';
 import { FeeTable } from './components/research/FeeTable';
 import { TermFrequencyChart } from './components/research/TermFrequencyChart';
 import { AuthorityChain } from './components/research/AuthorityChain';
+import { formatCitationLabel } from './utils/citationFormat';
+import { linkifyText, type OpenPageFn } from './utils/inlineCitations';
 
 // --- Configuration ---
 const RESEARCH_ENDPOINT = import.meta.env.VITE_API_ENDPOINT || 'http://localhost:8000/api/research';
@@ -70,41 +73,54 @@ const CitationCard = ({
   onOpenPage
 }: {
   citation: Citation;
-  onOpenPage?: (document: string, page: number) => void;
-}) => (
-  <div className="group flex items-center justify-between p-3 bg-zinc-900/50 border border-zinc-800/50 hover:border-zinc-700 transition-all duration-300 rounded-lg">
-    <div className="flex items-center gap-3 min-w-0">
-      <div className="flex items-center justify-center w-8 h-8 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-400 group-hover:text-white transition-colors">
-        <Scale size={14} />
-      </div>
-      <div className="flex flex-col min-w-0">
-        <span className="text-xs font-medium text-zinc-300 truncate font-mono tracking-tight group-hover:text-white transition-colors">
-          {citation.document}
-        </span>
-        <div className="flex items-center gap-2 mt-0.5">
-          {citation.state && (
-            <span className="text-[10px] font-mono text-zinc-500">{citation.state}</span>
-          )}
-          <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">
-            Relevance {Math.round(citation.relevance * 100)}%
+  onOpenPage?: (document: string, page: number, state?: string, agencyType?: string) => void;
+}) => {
+  const friendlyLabel = formatCitationLabel(
+    citation.document,
+    citation.state,
+    citation.agency_type,
+  );
+
+  return (
+    <div className="group flex items-center justify-between p-3 bg-zinc-900/50 border border-zinc-800/50 hover:border-zinc-700 transition-all duration-300 rounded-lg">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        <div className="flex items-center justify-center w-8 h-8 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-400 group-hover:text-white transition-colors shrink-0">
+          <Scale size={14} />
+        </div>
+        <div className="flex flex-col min-w-0 flex-1">
+          <span
+            className="text-xs font-medium text-zinc-200 truncate group-hover:text-white transition-colors"
+            title={citation.document}
+          >
+            {friendlyLabel}
           </span>
+          <div className="flex items-center gap-2 mt-0.5">
+            <span className="text-[10px] font-mono text-zinc-500 truncate" title={citation.document}>
+              {citation.document}
+            </span>
+            <span className="text-[10px] text-zinc-500">·</span>
+            <span className="text-[10px] text-zinc-400 uppercase tracking-wider">
+              {Math.round(citation.relevance * 100)}% match
+            </span>
+          </div>
         </div>
       </div>
+      <div className="flex gap-1 pl-2 shrink-0">
+        {citation.pages.slice(0, 3).map((page, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onOpenPage?.(citation.document, page, citation.state, citation.agency_type)}
+            className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-zinc-700 bg-black text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer pointer-events-auto"
+            title={`Open ${friendlyLabel} at page ${page}`}
+          >
+            p.{page}
+          </button>
+        ))}
+      </div>
     </div>
-    <div className="flex gap-1 pl-2">
-      {citation.pages.slice(0, 2).map((page, i) => (
-        <button
-          key={i}
-          type="button"
-          onClick={() => onOpenPage?.(citation.document, page)}
-          className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-zinc-700 bg-black text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer pointer-events-auto"
-        >
-          p.{page}
-        </button>
-      ))}
-    </div>
-  </div>
-);
+  );
+};
 
 const MetadataDisplay = ({ metadata }: { metadata?: ResponseMetadata }) => {
   if (!metadata) return null;
@@ -127,12 +143,50 @@ const MetadataDisplay = ({ metadata }: { metadata?: ResponseMetadata }) => {
   );
 };
 
+/**
+ * Build ReactMarkdown component overrides that wrap text nodes in clickable
+ * citation links. We handle the common inline-text containers (p, li, strong,
+ * em, td) — anything else renders as normal.
+ */
+function buildMarkdownComponents(
+  citations: Citation[],
+  onOpenPage?: OpenPageFn,
+) {
+  const processChildren = (children: React.ReactNode): React.ReactNode => {
+    return React.Children.map(children, (child) => {
+      if (typeof child === 'string') {
+        return linkifyText(child, citations, onOpenPage);
+      }
+      return child;
+    });
+  };
+
+  return {
+    p: ({ children, ...props }: { children?: React.ReactNode }) => (
+      <p {...props}>{processChildren(children)}</p>
+    ),
+    li: ({ children, ...props }: { children?: React.ReactNode }) => (
+      <li {...props}>{processChildren(children)}</li>
+    ),
+    strong: ({ children, ...props }: { children?: React.ReactNode }) => (
+      <strong {...props}>{processChildren(children)}</strong>
+    ),
+    em: ({ children, ...props }: { children?: React.ReactNode }) => (
+      <em {...props}>{processChildren(children)}</em>
+    ),
+    td: ({ children, ...props }: { children?: React.ReactNode }) => (
+      <td {...props}>{processChildren(children)}</td>
+    ),
+  };
+}
+
+
 const MessageBlock = ({
   message,
   onOpenCitationPage
 }: {
   message: Message;
-  onOpenCitationPage?: (document: string, page: number) => void;
+  onOpenCitationPage?: (document: string, page: number, state?: string, agencyType?: string) => void;
 }) => {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
@@ -174,7 +228,12 @@ const MessageBlock = ({
                     ERROR: {message.content}
                   </div>
                 ) : (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={buildMarkdownComponents(message.citations || [], onOpenCitationPage)}
+                  >
+                    {message.content}
+                  </ReactMarkdown>
                 )}
               </div>
 
@@ -260,7 +319,10 @@ function App() {
     const content = input.trim();
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    await sendMessage(content, mode === 'research' ? { filters } : undefined);
+    await sendMessage(content, {
+      filters: mode === 'research' ? filters : undefined,
+      mode: mode as 'research' | 'chat',
+    });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -467,13 +529,26 @@ function App() {
                 <span className="text-sm font-mono text-zinc-200 truncate">{pdf.docName}</span>
                 <span className="text-xs font-mono text-zinc-500">p.{pdf.page}</span>
               </div>
-              <button
-                type="button"
-                onClick={pdf.close}
-                className="text-xs font-mono text-zinc-400 hover:text-white transition-colors"
-              >
-                CLOSE
-              </button>
+              <div className="flex items-center gap-3">
+                <a
+                  href={`/docs/${encodeURIComponent(pdf.docName)}?page=${pdf.page}${pdf.state ? `&state=${pdf.state}` : ''}${pdf.agencyType ? `&agency_type=${pdf.agencyType}` : ''}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs font-mono text-zinc-400 hover:text-white transition-colors flex items-center gap-1"
+                  title="Open in full-screen viewer (new tab)"
+                >
+                  <ExternalLink size={12} />
+                  OPEN FULL VIEW
+                </a>
+                <span className="w-px h-3 bg-zinc-700" />
+                <button
+                  type="button"
+                  onClick={pdf.close}
+                  className="text-xs font-mono text-zinc-400 hover:text-white transition-colors"
+                >
+                  CLOSE
+                </button>
+              </div>
             </div>
 
             <div
