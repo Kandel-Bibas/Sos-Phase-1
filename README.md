@@ -1,6 +1,6 @@
-# RegLex - Regulatory AI Assistant
+# Reglex - Regulatory AI Assistant
 
-An AI-powered assistant built for the **Mississippi Secretary of State's Office (SoS)** to help staff verify regulatory compliance and trace statutory authority — without needing to manually search through hundreds of legal documents.
+An AI-powered assistant built for the **Mississippi Secretary of State's Office (SoS)** to help staff verify regulatory compliance and trace statutory authority - without needing to manually search through hundreds of legal documents.
 
 Built by students at **The University of Southern Mississippi** as part of the [Mississippi AI Innovation Hub](https://www.its.ms.gov/services/innovating/AI), a collaboration between **Mississippi ITS**, **MAIN (Mississippi Association of Independents Network)**, and **Amazon Web Services (AWS)**.
 
@@ -10,7 +10,7 @@ Built by students at **The University of Southern Mississippi** as part of the [
 
 Every year, the Mississippi Secretary of State's Office reviews administrative rules and regulations submitted by state agencies. A small policy team must manually confirm that each regulation is backed by the correct law (statutory authority). This is slow, repetitive, and inconsistent.
 
-**RegLex solves this** by letting staff ask questions in plain English and getting back answers that are always tied to the actual legal text — with citations pointing to the exact document and page.
+**Reglex solves this** by letting staff ask questions in plain English and getting back answers that are always tied to the actual legal text - with citations pointing to the exact document and page.
 
 ### Example Questions Staff Can Ask
 
@@ -21,13 +21,13 @@ Every year, the Mississippi Secretary of State's Office reviews administrative r
 
 ### Key Capabilities
 
-- **Plain-Language Q&A** — Ask questions in everyday language, no legal jargon required
-- **Citation-First Responses** — Every answer includes references to the source document, page number, and relevant passage
-- **Authority Verification** — Traces the chain from statute to regulation to detect unauthorized (ultra vires) actions
-- **Cross-State Comparison** — Compare regulations, fees, and requirements across 7 states
-- **Fee Analysis** — Analyze fee schedules against statutory caps
-- **PDF Drill-Down** — Click any citation to view the original document page
-- **Audit-Ready** — All queries and responses are logged for transparency and accountability
+- **Plain-Language Q&A** - Ask questions in everyday language, no legal jargon required
+- **Citation-First Responses** - Every answer includes references to the source document, page number, and relevant passage
+- **Authority Verification** - Traces the chain from statute to regulation to detect unauthorized (ultra vires) actions
+- **Cross-State Comparison** - Compare regulations, fees, and requirements across 7 states
+- **Fee Analysis** - Analyze fee schedules against statutory caps
+- **PDF Drill-Down** - Click any citation to view the original document page
+- **Audit-Ready** - All queries and responses are logged for transparency and accountability
 
 ---
 
@@ -157,7 +157,7 @@ Expanded to 6 additional states (Alabama, Louisiana, Tennessee, Arkansas, Georgi
 
 ## Multi-Agent System
 
-RegLex uses a team of specialized AI agents, each designed for a specific type of regulatory question:
+Reglex uses a team of specialized AI agents, each designed for a specific type of regulatory question:
 
 | Agent | What It Does |
 |-------|-------------|
@@ -330,10 +330,10 @@ This project was developed through the [Mississippi AI Innovation Hub](https://w
 
 **Key principles of the Innovation Hub:**
 
-- **Proof of Concept** — Students get AWS sandbox access to build real-world POCs with low risk for proposers
-- **Open Source** — All POCs result in open source solutions that can be built upon in production
-- **Educational Investment** — Supports multidisciplinary student teams from Mississippi universities and facilitates meaningful workforce connections
-- **Digital Innovation Support** — ITS, MAIN, and AWS deliver workshops to identify AI opportunities and create innovation roadmaps
+- **Proof of Concept** - Students get AWS sandbox access to build real-world POCs with low risk for proposers
+- **Open Source** - All POCs result in open source solutions that can be built upon in production
+- **Educational Investment** - Supports multidisciplinary student teams from Mississippi universities and facilitates meaningful workforce connections
+- **Digital Innovation Support** - ITS, MAIN, and AWS deliver workshops to identify AI opportunities and create innovation roadmaps
 
 ---
 
