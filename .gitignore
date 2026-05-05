@@ -207,7 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 crawled_documents/
-/.DS_Store
 
 # Ingestion runtime state
 ingestion/ingestion_progress*.json
